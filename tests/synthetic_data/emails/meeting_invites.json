@@ -1,0 +1,8 @@
+[
+  {
+    "id": "invite_001",
+    "from": "priya@example.com",
+    "subject": "Team sync",
+    "body": "Team sync on 2026-08-02 from 10:00 to 10:30 with sam@example.com and jordan@example.com."
+  }
+]

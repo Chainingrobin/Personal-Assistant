@@ -1,0 +1,14 @@
+[
+  {
+    "id": "email_001",
+    "from": "alex@example.com",
+    "subject": "Quick sync tomorrow",
+    "body": "Can we meet tomorrow at 3pm to review the launch plan?"
+  },
+  {
+    "id": "email_002",
+    "from": "billing@example.com",
+    "subject": "Invoice due",
+    "body": "Your invoice is due on 2026-08-01. Please pay before the deadline."
+  }
+]

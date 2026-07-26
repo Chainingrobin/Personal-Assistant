@@ -1,0 +1,67 @@
+# Docker Compose for Personal Assistant Embedded System
+# Services: Ollama, Open WebUI, n8n, Portainer
+
+version: "3.8"
+
+services:
+  # Portainer - Container management UI
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: personal-assistant-portainer
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./port_data:/data
+      # Uncomment to bind-mount host docker socket (use with caution)
+      # - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  # Ollama - LLM inference server
+  ollama:
+    image: ollama/ollama:latest
+    container_name: personal-assistant-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama_models:/root/.ollama
+      # Uncomment to persist data on Raspberry Pi
+      # - ./ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    restart: unless-stopped
+
+  # Open WebUI - LLM web interface (chat UI)
+  open-webui:
+    image: ghcr.io/openwebui/open-webui:main
+    container_name: personal-assistant-openwebui
+    ports:
+      - "8080:80"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      # Uncomment for persistent storage on Pi
+      # VOLUMES_MOUNT: /app/data:/app/web-ui/storage
+    volumes:
+      - ./webui_data:/app/backend/data
+    restart: unless-stopped
+
+  # n8n - Workflow automation tool (hosted as webhook server)
+  n8n:
+    image: docker.n8n.io/n8n:latest
+    container_name: personal-assistant-n8n
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_HOST=n8n
+      - WEBHOOK_URL=http://localhost:5678/hooks/
+      - NODE_ENV=production
+    volumes:
+      - ./n8n_data:/home/node/.local/share/n8n
+      # Uncomment for custom credentials file
+      # - ./credentials.json:/home/node/.n8n/credentials.json
+    restart: unless-stopped
+
+volumes:
+  port_data:
+  ollama_models:
+  webui_data:
+  n8n_data:

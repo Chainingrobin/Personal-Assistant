@@ -25,4 +25,3 @@ Do not mix evaluation logic into runtime adapters. The synthetic harness should 
 ## Related docs
 
 - [Synthetic LLM testing](./synthetic_llm_testing.md)
-- [Diagrams](./diagrams.md)

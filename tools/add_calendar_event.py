@@ -1,26 +1,29 @@
 import ollama
 
-def read_email(sender: str = None, limit: int = 5) -> str:
+def add_calendar_event(title: str, date: str, time: str = "12:00", duration_minutes: int = 60) -> str:
     """
-    Retrieves recent emails from the user's inbox.
-    
+    Adds a new event to the user's calendar.
+
     Args:
-        sender: Optional. The specific email address to filter by.
-        limit: The maximum number of emails to return.
+        title: The title or name of the event.
+        date: The date of the event in YYYY-MM-DD format.
+        time: The time of the event in HH:MM format. Defaults to 12:00.
+        duration_minutes: How long the event lasts in minutes.
     """
-    print(f"\n[MOCK API] 📥 Fetching top {limit} emails...")
-    if sender:
-        print(f"[MOCK API] 🔍 Filtering by sender: {sender}")
-        
-    return "Email 1: From alex@example.com - Subject: Launch Plan - Body: Let's meet tomorrow."
+    print(f"\n[MOCK API] 📝 Adding calendar event...")
+    print(f"  Title: {title}")
+    print(f"  Date: {date} at {time}")
+    print(f"  Duration: {duration_minutes} min")
+    return f"[SUCCESS] Event '{title}' added on {date} at {time} for {duration_minutes} minutes."
+
 
 # 1. Initialize the conversation history
 messages = [
     {
         'role': 'system', 
-        'content': 'You are a strict routing assistant. If asked about emails, you MUST use the read_email tool. Do not ask the user for missing arguments, just leave them empty.'
+        'content': 'You are a strict routing assistant. If asked about calender events, you MUST use the add_calendar_event  tool. Do not ask the user for missing arguments, just leave them empty.'
     },
-    {'role': 'user', 'content': 'Who sent me emails?'}
+    {'role': 'user', 'content': 'What events do I have coming up in the next week?'}
 ]
 
 max_retries = 10
@@ -34,9 +37,9 @@ while attempt <= max_retries:
     print(f"--- Attempt {attempt} of {max_retries} ---")
     
     response = ollama.chat(
-        model='qwen2.5:1.5b',
+        model='qwen2.5:3b',
         messages=messages,
-        tools=[read_email],
+        tools=[add_calendar_event],
         options={'temperature': 0.0}
     )
     

@@ -15,7 +15,7 @@ def parse_args() -> AgentConfig:
     parser = ArgumentParser(description="Run synthetic agentic tests against a local chat model.")
     parser.add_argument("--provider", default="ollama", help="Chat backend provider name")
     parser.add_argument("--base-url", default="http://localhost:11434", help="Chat backend base URL")
-    parser.add_argument("--model", default="qwen2.5:1.5b", help="Model name to test")
+    parser.add_argument("--model", default="qwen2.5:3b", help="Model name to test")
     parser.add_argument("--timeout-seconds", type=float, default=60.0, help="HTTP timeout in seconds")
     parser.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature")
     parser.add_argument("--api-path", default="/api/chat", help="HTTP path for the chat endpoint")

@@ -2,13 +2,15 @@ import ollama
 
 def add_calendar_event(title: str, date: str, time: str = "12:00", duration_minutes: int = 60) -> str:
     """
-    Adds a new event to the user's calendar.
+    Adds a new event to the user's calendar. You MUST extract the event title
+    and date directly from the user's message — never call this with empty arguments.
 
     Args:
-        title: The title or name of the event.
-        date: The date of the event in YYYY-MM-DD format.
-        time: The time of the event in HH:MM format. Defaults to 12:00.
-        duration_minutes: How long the event lasts in minutes.
+        title: The exact name/title of the event as mentioned by the user.
+        date: The date of the event in YYYY-MM-DD format. Infer relative dates
+              (e.g. "tomorrow") from context if no explicit date is given.
+        time: The time of the event in HH:MM 24-hour format. Defaults to 12:00 if unspecified.
+        duration_minutes: Duration in minutes. Defaults to 60 if unspecified.
     """
     print(f"\n[MOCK API] 📝 Adding calendar event...")
     print(f"  Title: {title}")

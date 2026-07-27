@@ -1,23 +1,20 @@
 import ollama
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from rag.retriever import retrieve, format_context
 
 def query_rag(query: str, top_k: int = 3) -> str:
     """
-    Queries the local RAG (Retrieval-Augmented Generation) knowledge base
-    for relevant stored context about the user's responsibilities and preferences.
+    Queries the local RAG knowledge base for relevant user context.
 
     Args:
         query: The natural language query to search the knowledge base.
         top_k: The number of top results to return.
     """
-    print(f"\n[MOCK API] 🔍 Querying RAG knowledge base...")
-    print(f"  Query: '{query}'")
-    print(f"  Returning top {top_k} results...")
-    return (
-        "Result 1: [Course] Advanced ML - Assignment due in 3 days, weight: 20%\n"
-        "Result 2: [Project] Jarvis Embedded System - Demo in 2 weeks, high priority\n"
-        "Result 3: [Preference] User prefers 90-minute study blocks with 15-min breaks"
-    )
+    print(f"\n[RAG] 🔍 Querying knowledge base: '{query}'")
+    results = retrieve(query, top_k=top_k)
+    return format_context(results)
 
 # 1. Initialize the conversation history
 messages = [

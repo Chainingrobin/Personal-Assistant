@@ -1,16 +1,12 @@
-import json
 import ollama
 from dataclasses import dataclass, field
 from typing import Any, Protocol, Callable
 
-# ─── Tool imports ─────────────────────────────────────────────────────────────
 from tools.read_email import read_email
 from tools.get_calendar_events import get_calendar_events
 from tools.add_calendar_event import add_calendar_event
 from tools.draft_email import draft_email
 from tools.query_rag import query_rag
-
-# ─── Data contracts (keep these — clean architecture) ─────────────────────────
 
 @dataclass(frozen=True)
 class AgentRequest:
@@ -23,29 +19,24 @@ class AgentResponse:
     tool_called: str | None = None
     tool_args: dict[str, Any] | None = None
     tool_result: str | None = None
+    model_reasoning: str | None = None   # NEW: any text the model produced pre-dispatch
     attempts: int = 1
     success: bool = False
 
-# ─── LLM Transport Protocol (swap Ollama for anything later) ──────────────────
 
 class LLMTransport(Protocol):
     def chat(self, messages: list[dict], tools: list[Callable]) -> Any:
         raise NotImplementedError
 
+
 class OllamaTransport:
-    """Concrete implementation of LLMTransport using Ollama."""
     def __init__(self, model: str = "qwen2.5:3b"):
         self.model = model
 
     def chat(self, messages: list[dict], tools: list[Callable]) -> Any:
-        return ollama.chat(
-            model=self.model,
-            messages=messages,
-            tools=tools,
-            options={"temperature": 0.0}
-        )
+        return ollama.chat(model=self.model, messages=messages, tools=tools,
+                            options={"temperature": 0.0})
 
-# ─── Tool Registry ────────────────────────────────────────────────────────────
 
 TOOL_REGISTRY: dict[str, Callable] = {
     "read_email": read_email,
@@ -55,84 +46,84 @@ TOOL_REGISTRY: dict[str, Callable] = {
     "query_rag": query_rag,
 }
 
-# ─── Orchestrator ─────────────────────────────────────────────────────────────
 
 class Orchestrator:
-    def __init__(self, transport: LLMTransport, max_retries: int = 5):
+    def __init__(self, transport: LLMTransport, max_retries: int = 5, verbose: bool = True):
         self.transport = transport
         self.max_retries = max_retries
+        self.verbose = verbose
+
+    def _log(self, *parts):
+        if self.verbose:
+            print(*parts)
 
     def run(self, request: AgentRequest) -> AgentResponse:
         messages = list(request.messages)
         tools = request.tools
 
         for attempt in range(1, self.max_retries + 1):
-            print(f"\n--- Attempt {attempt} of {self.max_retries} ---")
+            self._log(f"\n--- Attempt {attempt} of {self.max_retries} ---")
             response = self.transport.chat(messages, tools)
             msg = response.get("message", {})
 
+            # ── ALWAYS show the model's raw reasoning text, tool call or not ──
+            reasoning_text = msg.get("content", "").strip()
+            if reasoning_text:
+                self._log(f"💭 Model reasoning/text: '{reasoning_text}'")
+
             if msg.get("tool_calls"):
-                # ✅ Model called a tool
                 call = msg["tool_calls"][0]
                 name = call["function"]["name"]
                 args = call["function"]["arguments"]
 
-                print(f"✅ Tool called: {name}({args})")
+                self._log(f"✅ Tool selected: {name}")
+                self._log(f"📋 Arguments passed: {args if args else '(empty — check reasoning above)'}")
 
-                # Dispatch to the registered Python function
                 fn = TOOL_REGISTRY.get(name)
-                if fn is None:
-                    result = f"[ERROR] Unknown tool: {name}"
-                else:
-                    result = fn(**args)
+                tool_result = fn(**args) if fn else f"[ERROR] Unknown tool: {name}"
 
-                print(f"📦 Tool result: {result}")
+                self._log(f"📦 Raw tool result:\n{tool_result}")
+
+                messages.append(msg)
+                messages.append({"role": "tool", "content": tool_result})
+
+                final = self.transport.chat(messages, [])
+                final_text = final.get("message", {}).get("content", "")
+                self._log(f"🗣️  Final response:\n{final_text}")
 
                 return AgentResponse(
-                    raw_output=str(msg),
+                    raw_output=final_text,
                     tool_called=name,
                     tool_args=args,
-                    tool_result=result,
+                    tool_result=tool_result,
+                    model_reasoning=reasoning_text or None,
                     attempts=attempt,
                     success=True,
                 )
 
             else:
-                # ❌ Model replied with text instead of a tool call
-                text = msg.get("content", "")
-                print(f"❌ Text reply (no tool call): '{text[:100]}'")
-
+                self._log(f"❌ No tool call — model replied with text only.")
                 messages.append(msg)
                 messages.append({
                     "role": "user",
-                    "content": "CORRECTION: You must use one of your available tools. Do not respond in text. Call the appropriate tool now."
+                    "content": "CORRECTION: You must use one of your available tools. Call the appropriate tool now."
                 })
 
-        # Exhausted retries
-        return AgentResponse(
-            raw_output="",
-            success=False,
-            attempts=self.max_retries,
-        )
+        return AgentResponse(raw_output="", success=False, attempts=self.max_retries)
 
-
-# ─── Entry point for manual testing ──────────────────────────────────────────
 
 if __name__ == "__main__":
     transport = OllamaTransport(model="qwen2.5:3b")
-    orchestrator = Orchestrator(transport, max_retries=5)
+    orchestrator = Orchestrator(transport, max_retries=5, verbose=True)
 
     request = AgentRequest(
         messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a strict routing assistant for a student productivity system. "
-                    "You have access to tools for email, calendar, and knowledge retrieval. "
-                    "When the user asks about any of these, you MUST call the appropriate tool. "
-                    "Never respond with plain text when a tool is available."
-                ),
-            },
+            {"role": "system", "content": (
+                "You are a strict routing assistant for a student productivity system. "
+                "You have access to tools for email, calendar, and knowledge retrieval. "
+                "When the user asks about any of these, you MUST call the appropriate tool. "
+                "Never respond with plain text when a tool is available."
+            )},
             {"role": "user", "content": "What do I have coming up this week?"},
         ],
         tools=[read_email, get_calendar_events, add_calendar_event, draft_email, query_rag],
@@ -141,10 +132,10 @@ if __name__ == "__main__":
     result = orchestrator.run(request)
 
     print("\n" + "="*50)
-    print("FINAL RESULT")
+    print("DIAGNOSTIC SUMMARY")
     print("="*50)
-    print(f"Success:      {result.success}")
-    print(f"Tool called:  {result.tool_called}")
-    print(f"Arguments:    {result.tool_args}")
-    print(f"Tool result:  {result.tool_result}")
-    print(f"Attempts:     {result.attempts}")
+    print(f"Success:          {result.success}")
+    print(f"Tool called:      {result.tool_called}")
+    print(f"Arguments:        {result.tool_args}")
+    print(f"Model reasoning:  {result.model_reasoning}")
+    print(f"Attempts needed:  {result.attempts}")

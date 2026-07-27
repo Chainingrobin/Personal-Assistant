@@ -200,3 +200,9 @@ python orchestrate.py
 - Keep `qwen2.5:3b` and `nomic-embed-text` as the pinned models until a
   deliberate decision is made to change them (changing the embedding model
   invalidates the existing `rag/db/` contents).
+
+## Model Comparison
+
+- **Qwen2.5:3B**: 2.5 mins to run orchestrate.py, 100% success every tool call. MAX ram usage 4.5gb first tool fetch then plateud at 3gb usage with vscode ssh.
+
+- **Qwen2.5:1.5B**: 5 mins to run orchestrate.py, failed 3 tool calls 10 times in a row and timed out. MAX ram usage 2gb with vscode ssh.

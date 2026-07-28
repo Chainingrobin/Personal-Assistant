@@ -20,6 +20,7 @@ def add_calendar_event(
     and date directly from the user's message — never call this with empty arguments.
 
     Args:
+        user_id: Do not provide this argument. It is injected automatically.
         title: The exact name/title of the event as mentioned by the user.
         date: The date of the event in YYYY-MM-DD format. Infer relative dates
               (e.g. "tomorrow") from context if no explicit date is given.

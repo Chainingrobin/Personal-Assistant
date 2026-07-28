@@ -12,11 +12,12 @@ def _header_value(headers: list[dict[str, str]], name: str) -> str:
 
 
 # Gmail API users.messages.list and users.messages.get for the signed-in mailbox.
-def read_email(sender: str | None = None, timeframe: str | None = None, limit: int = 5, *, user_id: str = "") -> str:
+def read_email(sender: str | None = None, timeframe: str | None = None, limit: int = 1, *, user_id: str = "") -> str:
     """
     Retrieves recent emails from the user's inbox.
     
     Args:
+        user_id: Do not provide this argument. It is injected automatically.
         sender: Optional. The specific email address or domain to filter by (e.g., 'youtube').
         timeframe: Optional. Time filter. Use '1d' for last day, '1w' for last week, '1m' for last month, '1y' for last year.
         limit: The maximum number of emails to return. Protects context window size.

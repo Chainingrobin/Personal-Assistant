@@ -14,6 +14,7 @@ def draft_email(recipient: str, subject: str, body: str, *, user_id: str = "") -
     Drafts an email ready to be sent via the Gmail API.
 
     Args:
+        user_id: Do not provide this argument. It is injected automatically.
         recipient: The email address of the recipient.
         subject: The subject line of the email.
         body: The full body text of the email.

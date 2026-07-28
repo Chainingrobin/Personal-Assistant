@@ -20,6 +20,8 @@ import logging
 import ollama
 from dataclasses import dataclass, field
 from typing import Any, Protocol, Callable
+from datetime import datetime
+
 
 from tools.read_email import read_email
 from tools.get_calendar_events import get_calendar_events
@@ -28,6 +30,10 @@ from tools.draft_email import draft_email
 from tools.query_rag import query_rag
 
 logger = logging.getLogger(__name__)
+
+
+# Build dynamic system prompt before calling Ollama
+today_str = datetime.now().strftime("%A, %B %d, %Y")
 
 # ---------------------------------------------------------------------------
 # Shared Ollama options — applied to every request so you only tune one place.
@@ -231,18 +237,9 @@ class Orchestrator:
 
             else:
                 # ── Conversational turn — no tool needed ────────────────────
-                # Stream this too so greetings and chit-chat feel instant.
                 self._log("💬 No tool needed — streaming conversational reply:")
 
-                # Re-use the message history the model already processed so the
-                # conversational reply stays in context (important for follow-ups).
-                # Append the assistant's reasoning as if it were its own turn,
-                # then stream a continuation.  If reasoning_text is already a
-                # complete reply (common for simple greetings), just stream it
-                # directly to avoid a second LLM call entirely.
                 if reasoning_text:
-                    # The model already produced the full reply in pass 1 —
-                    # just stream-print it token by token for visual consistency.
                     for char in reasoning_text:
                         print(char, end="", flush=True)
                     print()
@@ -252,7 +249,16 @@ class Orchestrator:
                         attempts=attempt,
                         success=True,
                     )
-
+                else:
+                    # FALLBACK: If pass 1 returned no tool call and empty text,
+                    # force a streaming chat call so the user always gets a response.
+                    final_text = self.transport.chat_stream(messages)
+                    return AgentResponse(
+                        raw_output=final_text,
+                        attempts=attempt,
+                        success=bool(final_text),
+                    )
+                
         return AgentResponse(raw_output="", success=False, attempts=self.max_retries)
 
 
@@ -269,10 +275,18 @@ if __name__ == "__main__":
             {
                 "role": "system",
                 "content": (
-                    "You are a strict routing assistant for a student productivity system. "
-                    "You have access to tools for email, calendar, and knowledge retrieval. "
-                    "When the user asks about any of these, you MUST call the appropriate tool. "
-                    "Never respond with plain text when a tool is available."
+                    """You are a strict routing assistant for a student productivity system. 
+                    You have access to tools for email, calendar, and knowledge retrieval.
+                    When the user asks about any of these, you MUST call the appropriate tool.
+                    Never respond with plain text when a tool is available.
+                    Current Date: {today_str}
+
+                    DIRECT CONVERSATION RULES:
+                    - For general knowledge, date/time questions ("what's today's date?", "what day is it?"), answer DIRECTLY without calling any tools.
+
+                    TOOL USAGE RULES:
+                    - ONLY call `get_calendar_events` when the user explicitly asks about their schedule, appointments, calendar, or events.
+                    - Do NOT call `get_calendar_events` just to check today's date."""
                 ),
             },
             {"role": "user", "content": "What emails do I have?"},

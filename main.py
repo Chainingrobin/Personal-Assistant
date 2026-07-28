@@ -7,7 +7,7 @@ who the user is or how they were identified — that separation is deliberate,
 so swapping identity methods later never requires touching orchestrate.py.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from orchestrate import Orchestrator, OllamaTransport, AgentRequest
 from config import AGENT_CONFIG
 
@@ -27,7 +27,7 @@ from tools.auth import get_google_credentials
 # main.py's loop below should not need to change across any of these phases.
 from identity.manual import get_current_user, set_current_user, KNOWN_USERS
 
-ALL_TOOLS = [read_email, get_calendar_events, add_calendar_event, draft_email, query_rag]
+ALL_TOOLS = [read_email, get_calendar_events, add_calendar_event, draft_email]
 
 
 def ensure_user_enrolled(user_id: str):
@@ -47,40 +47,75 @@ def ensure_user_enrolled(user_id: str):
 
 
 
-def build_system_prompt(user_id: str) -> str:
-    """Builds the system prompt for the current turn, injecting the active user's identity, real-time local date context, and serving as the baseline for future per-user RAG context retrieval (e.g. retriever.retrieve(query, user_id=user_id))."""
-    
+def build_system_prompt(user_id: str, rag_context: str = "") -> str:
     now = datetime.now()
     today_str = now.strftime("%Y-%m-%d")
+    tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
     day_of_week = now.strftime("%A")
+    tomorrow_day = (now + timedelta(days=1)).strftime("%A")
     current_time = now.strftime("%I:%M %p")
 
-    return f"""You are Aegis, a personal assistant serving {user_id}./no_think
+    rag_section = ""
+    if rag_context and rag_context.strip():
+        rag_section = f"\nUSER CONTEXT FROM KNOWLEDGE BASE:\n{rag_context}\n"
 
-        RULES:
-        1. If the user asks for data from email, calendar, or knowledge base, you MUST call a tool directly. NEVER write text promising to search or check—call the tool immediately.
-        2. If the user prompt is a greeting, general chit-chat, or follow-up question that doesn't need external data, reply directly with plain text without tools.
-        3. Never ask for confirmation before calling a read-only tool.
+    return f"""You are Aegis, an intelligent personal assistant for {user_id}.
 
-        Current Local Time: {current_time} ({day_of_week}, {today_str})
-        TEMPORAL CONTEXT RULES:
-        - Today's date is strictly {today_str}.
-        - Use {today_str} as your baseline reference for relative terms like "today", "tonight", "tomorrow", or "this Friday".
-        - Never guess or hallucinate past dates like 2023 when scheduling events."""
+CURRENT CONTEXT:
+- Today's Date: {today_str} ({day_of_week})
+- Tomorrow's Date: {tomorrow_str} ({tomorrow_day})
+- Current Time: {current_time}
+{rag_section}
+TOOL ROUTING RULES (STRICT, IN PRIORITY ORDER):
+1. HIGHEST PRIORITY: if the user is only asking what today's or tomorrow's
+   date/day/time is (nothing about events, plans, or schedule), answer
+   DIRECTLY from CURRENT CONTEXT above. Never call a tool for this, even
+   though get_calendar_events also deals with dates.
+2. If the user asks about scheduled events, appointments, or their calendar:
+   call get_calendar_events.
+3. If the user asks about messages or emails: call read_email.
+
+EXAMPLES:
+User: "what's today's date"
+Assistant: (no tool call) "Today is {today_str}."
+
+User: "what's tomorrow's date"
+Assistant: (no tool call) "Tomorrow is {tomorrow_str} ({tomorrow_day})."
+
+User: "what day is tomorrow"
+Assistant: (no tool call) "Tomorrow is {tomorrow_day}."
+
+User: "do I have anything today"
+Assistant: (calls get_calendar_events with start_date='{today_str}')
+
+User: "what events do I have in all of September 2026"
+Assistant: (calls get_calendar_events with start_date='2026-09-01', end_date='2026-09-30')
+
+Never say "I don't have access to your calendar or email." You have direct access via tools.
+"""
+
 
 def run_one_turn(orchestrator: Orchestrator, user_id: str, user_input: str):
-    """Run a single conversational turn for the given identified user."""
+    # Only query RAG for personalization-flavored inputs.
+    # Skip it for short date/time/email/calendar queries to avoid wasted
+    # retrieval and the [RAG] print noise on every turn.
+    SKIP_RAG_KEYWORDS = {"date", "time", "today", "tomorrow", "email", "emails", "calendar", "events", "schedule"}
+    words = set(user_input.lower().split())
+    should_query_rag = not words.intersection(SKIP_RAG_KEYWORDS)
+
+    rag_context = ""
+    if should_query_rag:
+        rag_context = query_rag(query=user_input, top_k=3, user_id=user_id)
+
     request = AgentRequest(
         messages=[
-            {"role": "system", "content": build_system_prompt(user_id)},
+            {"role": "system", "content": build_system_prompt(user_id, rag_context=rag_context)},
             {"role": "user", "content": user_input},
         ],
-        tools=ALL_TOOLS,
+        tools=[read_email, get_calendar_events, add_calendar_event, draft_email],
+        # query_rag removed — handled above, not a model-visible tool
     )
-    # current_user_id flows into orchestrate.run(), which injects it into
-    # tool args after the LLM picks a tool — the model itself never sees it.
     return orchestrator.run(request, current_user_id=user_id)
-
 
 def main():
     transport = OllamaTransport(model=AGENT_CONFIG.model)

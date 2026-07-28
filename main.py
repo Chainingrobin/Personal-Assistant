@@ -6,6 +6,8 @@ orchestrate.py owns a single request/response cycle and knows nothing about
 who the user is or how they were identified — that separation is deliberate,
 so swapping identity methods later never requires touching orchestrate.py.
 """
+
+from datetime import datetime
 from orchestrate import Orchestrator, OllamaTransport, AgentRequest
 from config import AGENT_CONFIG
 
@@ -44,22 +46,27 @@ def ensure_user_enrolled(user_id: str):
 
 
 
+
 def build_system_prompt(user_id: str) -> str:
-    """Build the system prompt for the current turn.
+    """Builds the system prompt for the current turn, injecting the active user's identity, real-time local date context, and serving as the baseline for future per-user RAG context retrieval (e.g. retriever.retrieve(query, user_id=user_id))."""
+    
+    now = datetime.now()
+    today_str = now.strftime("%Y-%m-%d")
+    day_of_week = now.strftime("%A")
+    current_time = now.strftime("%I:%M %p")
 
-    FUTURE: this is where per-user RAG context gets pulled in and injected,
-    e.g. retriever.retrieve(query, user_id=user_id) -> format_context(...).
-    For now it's a static string with the user's name swapped in, just to
-    prove the LLM's behavior visibly changes when the active user changes.
-    """
-    return (
-        f"You are Aegis, a personal assistant serving {user_id}.\n"
-        "RULES:\n"
-        "1. If the user asks for data from email, calendar, or knowledge base, you MUST call a tool directly. NEVER write text promising to search or check—call the tool immediately.\n"
-        "2. If the user prompt is a greeting, general chit-chat, or follow-up question that doesn't need external data, reply directly with plain text without tools.\n"
-        "3. Never ask for confirmation before calling a read-only tool."
-    )
+    return f"""You are Aegis, a personal assistant serving {user_id}./no_think
 
+        RULES:
+        1. If the user asks for data from email, calendar, or knowledge base, you MUST call a tool directly. NEVER write text promising to search or check—call the tool immediately.
+        2. If the user prompt is a greeting, general chit-chat, or follow-up question that doesn't need external data, reply directly with plain text without tools.
+        3. Never ask for confirmation before calling a read-only tool.
+
+        Current Local Time: {current_time} ({day_of_week}, {today_str})
+        TEMPORAL CONTEXT RULES:
+        - Today's date is strictly {today_str}.
+        - Use {today_str} as your baseline reference for relative terms like "today", "tonight", "tomorrow", or "this Friday".
+        - Never guess or hallucinate past dates like 2023 when scheduling events."""
 
 def run_one_turn(orchestrator: Orchestrator, user_id: str, user_input: str):
     """Run a single conversational turn for the given identified user."""
@@ -94,9 +101,7 @@ def main():
             ensure_user_enrolled(new_user)  # check/enroll only the incoming user
             continue
 
-        result = run_one_turn(orchestrator, get_current_user(), raw)
-        print(result.raw_output)
-
+        run_one_turn(orchestrator, get_current_user(), raw)
 
 if __name__ == "__main__":
     main()

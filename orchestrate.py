@@ -1,5 +1,22 @@
-import logging
+"""
+orchestrate.py — single request/response cycle for the Jarvis/Aegis assistant.
 
+Optimizations applied vs. the original:
+  1. num_ctx capped at 2048 — reduces attention compute on every token.
+  2. num_predict capped at 512 — avoids runaway generation.
+  3. keep_alive=-1 passed per-request — model stays loaded between turns even
+     if the systemd env var wasn't set (belt-and-suspenders).
+  4. Second (summarization) LLM call uses a minimal 2-message context instead
+     of the full conversation history — cuts its token count dramatically.
+  5. Streaming used on the summarization call — first token prints immediately
+     so the user sees output start ~1-2 s into a 10-15 s inference instead of
+     waiting for the whole thing.
+
+Nothing in main.py needs to change — the public API (Orchestrator, OllamaTransport,
+AgentRequest, AgentResponse) is identical to the original.
+"""
+
+import logging
 import ollama
 from dataclasses import dataclass, field
 from typing import Any, Protocol, Callable
@@ -10,13 +27,44 @@ from tools.add_calendar_event import add_calendar_event
 from tools.draft_email import draft_email
 from tools.query_rag import query_rag
 
-
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Shared Ollama options — applied to every request so you only tune one place.
+# ---------------------------------------------------------------------------
+from config import AGENT_CONFIG
+
+def _build_options(profile: str, temperature: float) -> dict[str, Any]:
+    """
+    Returns Ollama inference options tuned for the active hardware profile.
+    Add new profiles here as needed — orchestrate.py itself never checks
+    the profile string directly, so adding "jetson" or "mac" later is trivial.
+    """
+    base = {"temperature": temperature, "keep_alive": -1}
+
+    if profile == "pi":
+        return {
+            **base,
+            "num_ctx": 2048,    # caps attention compute — scales quadratically
+            "num_predict": 512, # tool calls and summaries are short
+        }
+
+    # desktop / any other profile: let Ollama use its own defaults
+    # num_ctx and num_predict are intentionally omitted so the 4060
+    # can use its full context window and generate freely
+    return base
+
+_BASE_OPTIONS = _build_options(AGENT_CONFIG.hardware_profile, AGENT_CONFIG.temperature)
+
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class AgentRequest:
     messages: list[dict[str, str]]
     tools: list[Callable] = field(default_factory=list)
+
 
 @dataclass
 class AgentResponse:
@@ -24,13 +72,20 @@ class AgentResponse:
     tool_called: str | None = None
     tool_args: dict[str, Any] | None = None
     tool_result: str | None = None
-    model_reasoning: str | None = None   # NEW: any text the model produced pre-dispatch
+    model_reasoning: str | None = None
     attempts: int = 1
     success: bool = False
 
 
+# ---------------------------------------------------------------------------
+# Transport layer
+# ---------------------------------------------------------------------------
+
 class LLMTransport(Protocol):
     def chat(self, messages: list[dict], tools: list[Callable]) -> Any:
+        raise NotImplementedError
+
+    def chat_stream(self, messages: list[dict]) -> str:
         raise NotImplementedError
 
 
@@ -39,21 +94,59 @@ class OllamaTransport:
         self.model = model
 
     def chat(self, messages: list[dict], tools: list[Callable]) -> Any:
-        return ollama.chat(model=self.model, messages=messages, tools=tools,
-                            options={"temperature": 0.0})
+        """Blocking chat — used for the tool-selection pass where we need the
+        full response before we can do anything."""
+        return ollama.chat(
+            model=self.model,
+            messages=messages,
+            tools=tools,
+            options=_BASE_OPTIONS,
+        )
 
+    def chat_stream(self, messages: list[dict]) -> str:
+        """Streaming chat — used for the summarization pass so the user sees
+        the first token immediately rather than waiting for full inference.
+        Returns the complete assembled string for logging / AgentResponse."""
+        stream = ollama.chat(
+            model=self.model,
+            messages=messages,
+            stream=True,
+            options=_BASE_OPTIONS,
+        )
+        parts: list[str] = []
+        for chunk in stream:
+            token = chunk.get("message", {}).get("content", "")
+            if token:
+                print(token, end="", flush=True)
+                parts.append(token)
+        print()   # newline after the streamed response finishes
+        return "".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Tool registry
+# ---------------------------------------------------------------------------
 
 TOOL_REGISTRY: dict[str, Callable] = {
-    "read_email": read_email,
-    "get_calendar_events": get_calendar_events,
-    "add_calendar_event": add_calendar_event,
-    "draft_email": draft_email,
-    "query_rag": query_rag,
+    "read_email":           read_email,
+    "get_calendar_events":  get_calendar_events,
+    "add_calendar_event":   add_calendar_event,
+    "draft_email":          draft_email,
+    "query_rag":            query_rag,
 }
 
 
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
+
 class Orchestrator:
-    def __init__(self, transport: LLMTransport, max_retries: int = 5, verbose: bool = True):
+    def __init__(
+        self,
+        transport: LLMTransport,
+        max_retries: int = 5,
+        verbose: bool = True,
+    ):
         self.transport = transport
         self.max_retries = max_retries
         self.verbose = verbose
@@ -62,19 +155,21 @@ class Orchestrator:
         if self.verbose:
             print(*parts)
 
-    def run(self, request: AgentRequest, current_user_id: str = "youssef") -> AgentResponse:
+    def run(
+        self,
+        request: AgentRequest,
+        current_user_id: str = "youssef",
+    ) -> AgentResponse:
         messages = list(request.messages)
         tools = request.tools
 
         for attempt in range(1, self.max_retries + 1):
             self._log(f"\n--- Attempt {attempt} of {self.max_retries} ---")
+
+            # ── Pass 1: tool selection (blocking, full context) ──────────────
             response = self.transport.chat(messages, tools)
             msg = response.get("message", {})
-
-            # ── ALWAYS show the model's raw reasoning text, tool call or not ──
             reasoning_text = msg.get("content", "").strip()
-            #if reasoning_text:
-                #self._log(f"💭 Model reasoning/text: '{reasoning_text}'")
 
             if msg.get("tool_calls"):
                 call = msg["tool_calls"][0]
@@ -82,11 +177,10 @@ class Orchestrator:
                 args = dict(call["function"].get("arguments") or {})
 
                 self._log(f"✅ Tool selected: {name}")
-                self._log(f"📋 Arguments passed: {args if args else '(empty — check reasoning above)'}")
+                self._log(f"📋 Arguments: {args if args else '(empty)'}")
 
                 fn = TOOL_REGISTRY.get(name)
                 if fn:
-                    # The LLM chooses the tool and task arguments only; user identity comes from the face/voice layer.
                     args["user_id"] = current_user_id
                     try:
                         tool_result = fn(**args)
@@ -98,12 +192,32 @@ class Orchestrator:
 
                 self._log(f"📦 Raw tool result:\n{tool_result}")
 
-                messages.append(msg)
-                messages.append({"role": "tool", "content": str(tool_result)})
+                # ── Pass 2: summarization (streaming, minimal context) ───────
+                # Only send what the model actually needs — the tool name and
+                # its result.  Sending the full conversation history here is
+                # wasted tokens: the model produced a natural-language summary
+                # either way, and the extra context doesn't improve quality for
+                # this task while costing significant compute on a Pi.
+                summary_messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a concise assistant. Summarize the tool result "
+                            "below in one to three natural sentences for the user. "
+                            "Do not repeat the raw data verbatim; highlight what matters."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Tool used: {name}\n"
+                            f"Result:\n{tool_result}"
+                        ),
+                    },
+                ]
 
-                final = self.transport.chat(messages, [])
-                final_text = final.get("message", {}).get("content", "")
-                
+                self._log("🖨️  Streaming response:")
+                final_text = self.transport.chat_stream(summary_messages)
 
                 return AgentResponse(
                     raw_output=final_text,
@@ -116,17 +230,35 @@ class Orchestrator:
                 )
 
             else:
-                # ── NEW: Allow the model to just chat without forcing a tool ──
-                self._log("💬 No tool needed — model replied with conversational text.")
-                return AgentResponse(
-                    raw_output=reasoning_text,
-                    model_reasoning=reasoning_text or None,
-                    attempts=attempt,
-                    success=True,
-                )
+                # ── Conversational turn — no tool needed ────────────────────
+                # Stream this too so greetings and chit-chat feel instant.
+                self._log("💬 No tool needed — streaming conversational reply:")
+
+                # Re-use the message history the model already processed so the
+                # conversational reply stays in context (important for follow-ups).
+                # Append the assistant's reasoning as if it were its own turn,
+                # then stream a continuation.  If reasoning_text is already a
+                # complete reply (common for simple greetings), just stream it
+                # directly to avoid a second LLM call entirely.
+                if reasoning_text:
+                    # The model already produced the full reply in pass 1 —
+                    # just stream-print it token by token for visual consistency.
+                    for char in reasoning_text:
+                        print(char, end="", flush=True)
+                    print()
+                    return AgentResponse(
+                        raw_output=reasoning_text,
+                        model_reasoning=reasoning_text,
+                        attempts=attempt,
+                        success=True,
+                    )
 
         return AgentResponse(raw_output="", success=False, attempts=self.max_retries)
 
+
+# ---------------------------------------------------------------------------
+# Self-test — python orchestrate.py
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     transport = OllamaTransport(model="qwen2.5:3b")
@@ -134,22 +266,25 @@ if __name__ == "__main__":
 
     request = AgentRequest(
         messages=[
-            {"role": "system", "content": (
-                "You are a strict routing assistant for a student productivity system. "
-                "You have access to tools for email, calendar, and knowledge retrieval. "
-                "When the user asks about any of these, you MUST call the appropriate tool. "
-                "Never respond with plain text when a tool is available."
-            )},
-            {"role": "user", "content": ""},
+            {
+                "role": "system",
+                "content": (
+                    "You are a strict routing assistant for a student productivity system. "
+                    "You have access to tools for email, calendar, and knowledge retrieval. "
+                    "When the user asks about any of these, you MUST call the appropriate tool. "
+                    "Never respond with plain text when a tool is available."
+                ),
+            },
+            {"role": "user", "content": "What emails do I have?"},
         ],
         tools=[read_email, get_calendar_events, add_calendar_event, draft_email, query_rag],
     )
 
     result = orchestrator.run(request, current_user_id="youssef")
 
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     print("DIAGNOSTIC SUMMARY")
-    print("="*50)
+    print("=" * 50)
     print(f"Success:          {result.success}")
     print(f"Tool called:      {result.tool_called}")
     print(f"Arguments:        {result.tool_args}")

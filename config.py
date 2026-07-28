@@ -19,11 +19,12 @@ def _split_scopes(value: str | None, default: tuple[str, ...]) -> tuple[str, ...
 @dataclass(frozen=True)
 class AgentConfig:
     base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    model: str = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
+    model: str = os.getenv("OLLAMA_MODEL", "qwen3:1.7b")
     timeout_seconds: float = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "60.0"))
     temperature: float = float(os.getenv("OLLAMA_TEMPERATURE", "0.0"))
     api_path: str = os.getenv("OLLAMA_API_PATH", "/api/chat")
     provider: str = os.getenv("OLLAMA_PROVIDER", "ollama")
+    hardware_profile: str = os.getenv("HARDWARE_PROFILE", "desktop")
 
 
 @dataclass(frozen=True)

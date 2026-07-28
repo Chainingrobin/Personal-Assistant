@@ -8,7 +8,6 @@ from googleapiclient.discovery import build
 from tools.auth import get_google_credentials
 
 
-# Google Calendar API events.insert for the signed-in user's primary calendar.
 def add_calendar_event(
     title: str,
     date: str,
@@ -17,9 +16,7 @@ def add_calendar_event(
     *,
     user_id: str = "",
 ) -> str:
-
-    """
-    Adds a new event to the user's calendar. You MUST extract the event title
+    """Adds a new event to the user's calendar. You MUST extract the event title
     and date directly from the user's message — never call this with empty arguments.
 
     Args:
@@ -30,9 +27,20 @@ def add_calendar_event(
         duration_minutes: Duration in minutes. Defaults to 60 if unspecified.
     """
 
-    
     if not user_id:
         raise ValueError("user_id is required")
+
+    # --- DEFENSIVE SANITIZATION ---
+    # Fallback to defaults if the LLM explicitly passed None
+    if not time:
+        time = "12:00"
+    
+    if duration_minutes is None:
+        duration_minutes = 60
+    else:
+        # Convert to int in case the LLM passed string "60"
+        duration_minutes = int(duration_minutes)
+    # ------------------------------
 
     credentials = get_google_credentials(user_id)
     service = build("calendar", "v3", credentials=credentials, cache_discovery=False)

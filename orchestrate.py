@@ -73,8 +73,8 @@ class Orchestrator:
 
             # ── ALWAYS show the model's raw reasoning text, tool call or not ──
             reasoning_text = msg.get("content", "").strip()
-            if reasoning_text:
-                self._log(f"💭 Model reasoning/text: '{reasoning_text}'")
+            #if reasoning_text:
+                #self._log(f"💭 Model reasoning/text: '{reasoning_text}'")
 
             if msg.get("tool_calls"):
                 call = msg["tool_calls"][0]

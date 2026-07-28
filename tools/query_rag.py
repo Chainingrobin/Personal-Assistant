@@ -4,20 +4,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from rag.retriever import retrieve, format_context
 
-def query_rag(query: str, top_k: int = 3) -> str:
+# Add user_id as a keyword-only argument to match the other tools
+def query_rag(query: str, top_k: int = 3, *, user_id: str = "") -> str:
     """
     Queries the local RAG knowledge base for relevant user context.
+    Do NOT use this for general world knowledge or trivia.
 
     Args:
         query: The natural language query to search the knowledge base.
         top_k: The number of top results to return.
     """
     print(f"\n[RAG] 🔍 Querying knowledge base: '{query}'")
-    results = retrieve(query, top_k=top_k)
+    # Eventually, you can pass user_id into retrieve() to isolate documents!
+    results = retrieve(query, top_k=top_k) 
     return format_context(results)
-
-
-# --- EVERYTHING BELOW HERE MUST BE INDENTED UNDER THE IF STATEMENT ---
 
 if __name__ == "__main__":
     # 1. Initialize the conversation history

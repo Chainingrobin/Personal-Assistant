@@ -1,3 +1,5 @@
+import logging
+
 import ollama
 from dataclasses import dataclass, field
 from typing import Any, Protocol, Callable
@@ -7,6 +9,9 @@ from tools.get_calendar_events import get_calendar_events
 from tools.add_calendar_event import add_calendar_event
 from tools.draft_email import draft_email
 from tools.query_rag import query_rag
+
+
+logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class AgentRequest:
@@ -57,7 +62,7 @@ class Orchestrator:
         if self.verbose:
             print(*parts)
 
-    def run(self, request: AgentRequest) -> AgentResponse:
+    def run(self, request: AgentRequest, current_user_id: str = "youssef") -> AgentResponse:
         messages = list(request.messages)
         tools = request.tools
 
@@ -74,40 +79,51 @@ class Orchestrator:
             if msg.get("tool_calls"):
                 call = msg["tool_calls"][0]
                 name = call["function"]["name"]
-                args = call["function"]["arguments"]
+                args = dict(call["function"].get("arguments") or {})
 
                 self._log(f"✅ Tool selected: {name}")
                 self._log(f"📋 Arguments passed: {args if args else '(empty — check reasoning above)'}")
 
                 fn = TOOL_REGISTRY.get(name)
-                tool_result = fn(**args) if fn else f"[ERROR] Unknown tool: {name}"
+                if fn:
+                    # The LLM chooses the tool and task arguments only; user identity comes from the face/voice layer.
+                    args["user_id"] = current_user_id
+                    try:
+                        tool_result = fn(**args)
+                    except Exception as exc:
+                        logger.exception("Tool %s failed", name)
+                        tool_result = f"[ERROR] Tool {name} failed: {exc}"
+                else:
+                    tool_result = f"[ERROR] Unknown tool: {name}"
 
                 self._log(f"📦 Raw tool result:\n{tool_result}")
 
                 messages.append(msg)
-                messages.append({"role": "tool", "content": tool_result})
+                messages.append({"role": "tool", "content": str(tool_result)})
 
                 final = self.transport.chat(messages, [])
                 final_text = final.get("message", {}).get("content", "")
-                self._log(f"🗣️  Final response:\n{final_text}")
+                
 
                 return AgentResponse(
                     raw_output=final_text,
                     tool_called=name,
                     tool_args=args,
-                    tool_result=tool_result,
+                    tool_result=str(tool_result),
                     model_reasoning=reasoning_text or None,
                     attempts=attempt,
                     success=True,
                 )
 
             else:
-                self._log(f"❌ No tool call — model replied with text only.")
-                messages.append(msg)
-                messages.append({
-                    "role": "user",
-                    "content": "CORRECTION: You must use one of your available tools. Call the appropriate tool now."
-                })
+                # ── NEW: Allow the model to just chat without forcing a tool ──
+                self._log("💬 No tool needed — model replied with conversational text.")
+                return AgentResponse(
+                    raw_output=reasoning_text,
+                    model_reasoning=reasoning_text or None,
+                    attempts=attempt,
+                    success=True,
+                )
 
         return AgentResponse(raw_output="", success=False, attempts=self.max_retries)
 
@@ -124,12 +140,12 @@ if __name__ == "__main__":
                 "When the user asks about any of these, you MUST call the appropriate tool. "
                 "Never respond with plain text when a tool is available."
             )},
-            {"role": "user", "content": "What do I have coming up this week?"},
+            {"role": "user", "content": ""},
         ],
         tools=[read_email, get_calendar_events, add_calendar_event, draft_email, query_rag],
     )
 
-    result = orchestrator.run(request)
+    result = orchestrator.run(request, current_user_id="youssef")
 
     print("\n" + "="*50)
     print("DIAGNOSTIC SUMMARY")

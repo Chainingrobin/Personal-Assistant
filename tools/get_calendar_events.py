@@ -1,74 +1,53 @@
-import ollama 
+from __future__ import annotations
 
-def get_calendar_events(days_ahead: int = 7) -> str:
+from datetime import datetime, timedelta
+
+from googleapiclient.discovery import build
+
+from tools.auth import get_google_credentials
+
+
+# Google Calendar API events.list for the signed-in user's primary calendar.
+def get_calendar_events(days_ahead: int = 7, *, user_id: str = "") -> str:
     """
     Retrieves upcoming calendar events within a given time window.
 
     Args:
         days_ahead: How many days ahead to look for events.
     """
-    print(f"\n[MOCK API] 📅 Fetching events for the next {days_ahead} days...")
-    return (
-        "Event 1: Project Demo - in 2 days at 2:00 PM\n"
-        "Event 2: ML Lecture - tomorrow at 10:00 AM\n"
-        "Event 3: Study Group - in 5 days at 6:00 PM"
+    if not user_id:
+        raise ValueError("user_id is required")
+
+    credentials = get_google_credentials(user_id)
+    service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
+
+    now = datetime.now().astimezone()
+    response = (
+        service.events()
+        .list(
+            calendarId="primary",
+            timeMin=now.isoformat(),
+            timeMax=(now + timedelta(days=days_ahead)).isoformat(),
+            singleEvents=True,
+            orderBy="startTime",
+            maxResults=10,
+        )
+        .execute()
     )
 
+    events = response.get("items", [])
+    if not events:
+        return f"No calendar events found in the next {days_ahead} days."
 
-# 1. Initialize the conversation history
-messages = [
-    {
-        'role': 'system', 
-        'content': 'You are a strict routing assistant. If asked about calender events, you MUST use the get_calendar_events tool. Do not ask the user for missing arguments, just leave them empty.'
-    },
-    {'role': 'user', 'content': 'What events do I have coming up in the next week?'}
-]
+    lines = [f"Upcoming events in the next {days_ahead} days:"]
+    for event in events:
+        start_info = event.get("start", {})
+        start = start_info.get("dateTime") or start_info.get("date") or "unknown start"
+        summary = event.get("summary", "Untitled event")
+        location = event.get("location")
+        line = f"- {start}: {summary}"
+        if location:
+            line += f" @ {location}"
+        lines.append(line)
 
-max_retries = 10
-attempt = 1
-tool_called = False
-
-print("Starting Orchestrator Retry Loop...\n")
-
-# 2. The Retry Loop
-while attempt <= max_retries:
-    print(f"--- Attempt {attempt} of {max_retries} ---")
-    
-    response = ollama.chat(
-        model='qwen2.5:3b',
-        messages=messages,
-        tools=[get_calendar_events],
-        options={'temperature': 0.0}
-    )
-    
-    response_message = response.get('message', {})
-    
-    # Check if the model successfully called the tool
-    if response_message.get('tool_calls'):
-        print("\n✅ SUCCESS: The model decided to call a tool!")
-        for call in response_message['tool_calls']:
-            print(f"Tool Name: {call['function']['name']}")
-            print(f"Arguments: {call['function']['arguments']}")
-        
-        tool_called = True
-        break # Exit the loop, we got the JSON we need!
-        
-    else:
-        # The model failed and replied with text
-        text_reply = response_message.get('content', '')
-        print(f"❌ FAIL: Model replied with text: '{text_reply}'")
-        
-        # Add the model's incorrect response to the history so it has context
-        messages.append(response_message)
-        
-        # Add a stern correction as a new user prompt
-        messages.append({
-            'role': 'user',
-            'content': 'SYSTEM CORRECTION: You failed to use the required tool. Do not speak to me. Call the read_email tool immediately.'
-        })
-        
-        attempt += 1
-
-# 3. Fallback if it completely fails
-if not tool_called:
-    print("\n🚨 CRITICAL ERROR: Model failed to call the tool after maximum retries.")
+    return "\n".join(lines)

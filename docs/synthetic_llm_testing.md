@@ -54,6 +54,8 @@ Test malformed inputs, missing dates, noisy signatures, mixed languages, and spa
 
 ## Suggested architecture in this repo
 
+This document is kept as historical guidance. The old `tests/agentic/` harness is no longer part of the trimmed runtime snapshot in this repo.
+
 ### Runtime boundary
 
 Keep a small orchestrator layer in `services/llm_orchestrator/`.
@@ -65,18 +67,6 @@ That layer should own:
 - tool schema serialization
 - response parsing and validation
 
-### Synthetic evaluation layer
-
-Keep all fake data and scoring in `tests/agentic/`.
-
-That layer should own:
-
-- fixture loading
-- scenario definitions
-- prompt generation
-- JSON validation
-- score aggregation
-
 ### Side-effect adapters
 
 Keep anything that would talk to Gmail, Outlook, calendars, or webhooks behind adapters in `services/actions/`.
@@ -87,10 +77,10 @@ For now, those adapters should be mocked or stubbed in synthetic tests.
 
 Use this as the clean starting point:
 
-- keep `services/llm_orchestrator/`, `services/actions/`, `services/rag_store/`, `services/identity/`, and `services/sensing/`
-- keep `tests/agentic/` and `tests/synthetic_data/`
+- keep the runtime assistant code small and direct
+- keep real Google integrations behind the tool functions in `tools/`
+- keep any future synthetic harness separate from the runtime path
 - remove malformed placeholder names that contain commas or empty starter files
-- replace the old doc fragments with one clear architecture doc and one clear testing doc
 
 ## Basic test flow
 
@@ -104,4 +94,4 @@ Use this as the clean starting point:
 
 ## Skeleton implementation
 
-The repo now has a minimal code path under `tests/agentic/` that can be extended into a proper harness. It is intentionally small so that you can swap in richer scoring or tool-calling logic later without rewriting the whole test structure.
+If you reintroduce a synthetic harness later, keep it separate from the runtime assistant so it can be swapped or removed without touching the tool-calling code.

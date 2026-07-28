@@ -118,6 +118,7 @@ def run_one_turn(orchestrator: Orchestrator, user_id: str, user_input: str):
     return orchestrator.run(request, current_user_id=user_id)
 
 def main():
+    print(f"[config] model={AGENT_CONFIG.model} profile={AGENT_CONFIG.hardware_profile} temp={AGENT_CONFIG.temperature}")
     transport = OllamaTransport(model=AGENT_CONFIG.model)
     orchestrator = Orchestrator(transport, max_retries=5, verbose=True)
 

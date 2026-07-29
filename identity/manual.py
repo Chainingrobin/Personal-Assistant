@@ -14,7 +14,7 @@ when you swap this out for real recognition.
 
 # Known demo users for this project. Each needs their own Google Cloud OAuth
 # consent + their own token file at credentials/tokens/<user_id>.json.
-KNOWN_USERS = ("youssef", "robin")
+KNOWN_USERS = ("youssef", "robin","mariam")
 
 _current_user: str = "youssef"  # default active user at startup
 

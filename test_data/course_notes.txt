@@ -1,0 +1,5 @@
+Linear Algebra midterm exam is scheduled for next Monday at 10 AM in Room 204.
+The exam covers eigenvalues, eigenvectors, matrix diagonalization, and vector
+spaces. Professor Hana said the final exam will be cumulative and will weigh
+40% of the total grade. Office hours are Wednesday 2-4 PM for anyone who wants
+to review practice problems before the midterm.

@@ -1,0 +1,5 @@
+task,due_date,priority
+Fix empty-argument bug in add_calendar_event,2026-08-03,high
+Chunk long PDF documents before embedding,2026-08-10,medium
+Swap mocked Gmail tool for real Gmail API,2026-08-15,high
+Buy a new SD card for the Raspberry Pi 5,2026-08-05,low

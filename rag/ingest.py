@@ -2,6 +2,8 @@
 import os, json, shutil, csv
 import ollama
 
+from rag.diagnostics import log_ingest, Timer
+
 DB_PATH = "rag/db"
 EMBED_MODEL = "nomic-embed-text"
 
@@ -41,14 +43,36 @@ def embed_text(text: str) -> list[float]:
     response = ollama.embed(model=EMBED_MODEL, input=text)
     return response["embeddings"][0]
 
-def ingest_document(doc_id: str, content: str, metadata: dict = None):
+def ingest_document(doc_id: str, content: str, metadata: dict = None, *, _filepath: str = "", _ext: str = ""):
     """Embed raw text and store it. Used directly for manual/programmatic entries."""
     os.makedirs(DB_PATH, exist_ok=True)
-    vector = embed_text(content)
+
+    error = None
+    vector = []
+    with Timer() as t:
+        try:
+            vector = embed_text(content)
+        except Exception as exc:
+            error = str(exc)
+
+    log_ingest(
+        doc_id=doc_id,
+        filepath=_filepath or f"(manual:{doc_id})",
+        ext=_ext or "(manual)",
+        char_count=len(content),
+        vector_dim=len(vector),
+        embed_seconds=t.elapsed,
+        error=error,
+    )
+
+    if error:
+        # Don't silently write a broken entry to the DB — that would poison
+        # every future retrieval with a doc that has no usable vector.
+        return
+
     entry = {"id": doc_id, "content": content, "metadata": metadata or {}, "vector": vector}
     with open(os.path.join(DB_PATH, f"{doc_id}.json"), "w") as f:
         json.dump(entry, f)
-    print(f"[RAG] ✅ Ingested: '{doc_id}' ({len(content)} chars)")
 
 def ingest_path(filepath: str, doc_id: str = None, metadata: dict = None):
     """
@@ -63,27 +87,37 @@ def ingest_path(filepath: str, doc_id: str = None, metadata: dict = None):
 
     doc_id = doc_id or os.path.splitext(os.path.basename(filepath))[0]
     print(f"[RAG] 📂 Loading: {filepath}")
-    content = extractor(filepath)
+
+    try:
+        content = extractor(filepath)
+    except Exception as exc:
+        log_ingest(doc_id=doc_id, filepath=filepath, ext=ext, char_count=0,
+                   vector_dim=0, embed_seconds=0.0, error=f"extraction failed: {exc}")
+        return
 
     if not content.strip():
-        print(f"[RAG] ⚠️  Empty content, skipping: {filepath}")
+        log_ingest(doc_id=doc_id, filepath=filepath, ext=ext, char_count=0,
+                   vector_dim=0, embed_seconds=0.0, error="empty content after extraction")
         return
 
     meta = metadata or {}
     meta.setdefault("source", filepath)
-    ingest_document(doc_id, content, meta)
+    ingest_document(doc_id, content, meta, _filepath=filepath, _ext=ext)
 
 def ingest_folder(folder: str = "data"):
     """Ingest every supported file in a folder in one call. Simplest workflow."""
     if not os.path.isdir(folder):
         print(f"[RAG] ⚠️  Folder not found: {folder}")
         return
-    for filename in os.listdir(folder):
+    count = 0
+    for filename in sorted(os.listdir(folder)):
         ext = os.path.splitext(filename)[1].lower()
         if ext in _EXTRACTORS:
             ingest_path(os.path.join(folder, filename))
+            count += 1
+    print(f"[RAG] 📊 Folder ingest complete: {count} supported file(s) processed from '{folder}'.")
 
-# ─── Management ────────────────────────────────────────────────────────────
+# ─── Management ──────────────────────────────────────────────────────
 
 def update_document(doc_id: str, content: str, metadata: dict = None):
     print(f"[RAG] 🔄 Updating: '{doc_id}'")

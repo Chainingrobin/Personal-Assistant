@@ -69,7 +69,7 @@ if __name__ == "__main__":
             # Add a stern correction as a new user prompt
             messages.append({
                 'role': 'user',
-                'content': 'SYSTEM CORRECTION: You failed to use the required tool. Do not speak to me. Call the read_email tool immediately.'
+                'content': 'SYSTEM CORRECTION: You failed to use the required tool. Do not speak to me. Call the query_rag tool immediately.'
             })
             
             attempt += 1

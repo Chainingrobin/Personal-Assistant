@@ -23,6 +23,11 @@ from config import GOOGLE_CONFIG
 
 
 def _token_path(user_id: str) -> Path:
+    if not user_id:
+        raise ValueError("user_id is required")
+    normalized = user_id.replace("_", "").replace("-", "")
+    if not normalized.isalnum():
+        raise ValueError(f"Invalid user_id: {user_id!r}")
     return Path(GOOGLE_CONFIG.token_dir) / f"{user_id}.json"
 
 

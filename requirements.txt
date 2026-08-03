@@ -6,3 +6,10 @@ google-auth-httplib2
 google-auth-oauthlib
 python-dotenv
 dateparser
+faster-whisper
+openwakeword
+sounddevice
+soundfile
+speechbrain
+webrtcvad-wheels; platform_system == "Windows"
+webrtcvad; platform_system != "Windows"

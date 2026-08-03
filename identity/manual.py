@@ -1,3 +1,13 @@
+"""Compatibility shim for the old manual identity switch path.
+
+The runtime now uses identity.voice_id directly. This module keeps the old
+imports working for any local scripts that still point at identity.manual.
+"""
+
+from __future__ import annotations
+
+from identity.voice_id import DEFAULT_KNOWN_USERS as KNOWN_USERS
+from identity.voice_id import get_current_user, set_current_user, switch_user
 """
 Phase 1 identity resolution: manual, hardcoded user switching.
 

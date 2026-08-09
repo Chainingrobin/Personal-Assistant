@@ -248,6 +248,7 @@ it's fully local.
 
    ```bash
    python identity/live_test_verify.py <your_name> --force
+   python identity/live_test_verify.py youssef --force
    ```
 
 4. **Full pipeline test.** Once steps 2–3 look solid, run the full

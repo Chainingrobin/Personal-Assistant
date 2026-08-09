@@ -96,7 +96,7 @@ class LLMTransport(Protocol):
 
 
 class OllamaTransport:
-    def __init__(self, model: str = "qwen2.5:3b"):
+    def __init__(self, model: str = "qwen3:1.7b"):
         self.model = model
 
     def chat(self, messages: list[dict], tools: list[Callable]) -> Any:

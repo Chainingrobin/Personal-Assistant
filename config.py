@@ -16,6 +16,12 @@ def _split_scopes(value: str | None, default: tuple[str, ...]) -> tuple[str, ...
     return scopes or default
 
 
+def _as_bool(value: str | None, default: bool) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class AgentConfig:
     base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -41,5 +47,21 @@ class GoogleConfig:
     )
 
 
+@dataclass(frozen=True)
+class VisionConfig:
+    camera_backend: str = os.getenv("AEGIS_CAMERA_BACKEND", "auto")
+    camera_fps: int = int(os.getenv("AEGIS_CAMERA_FPS", "10"))
+    calibration_duration_sec: float = float(os.getenv("AEGIS_CALIBRATION_DURATION_SEC", "5.0"))
+    yaw_tolerance_deg: float = float(os.getenv("AEGIS_YAW_TOLERANCE_DEG", "12.0"))
+    pitch_tolerance_deg: float = float(os.getenv("AEGIS_PITCH_TOLERANCE_DEG", "10.0"))
+    distraction_duration_threshold_sec: float = float(
+        os.getenv("AEGIS_DISTRACTION_DURATION_THRESHOLD_SEC", "3.0")
+    )
+    escalation_event_count: int = int(os.getenv("AEGIS_ESCALATION_EVENT_COUNT", "3"))
+    escalation_window_sec: float = float(os.getenv("AEGIS_ESCALATION_WINDOW_SEC", "300.0"))
+    show_debug_window: bool = _as_bool(os.getenv("AEGIS_SHOW_DEBUG_WINDOW"), True)
+
+
 AGENT_CONFIG = AgentConfig()
 GOOGLE_CONFIG = GoogleConfig()
+VISION_CONFIG = VisionConfig()

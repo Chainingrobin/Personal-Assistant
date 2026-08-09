@@ -10,22 +10,25 @@ orchestrate.py and remains unchanged.
 from __future__ import annotations
 
 import time
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from config import AGENT_CONFIG
+from config import AGENT_CONFIG, VISION_CONFIG
 from orchestrate import AgentRequest, OllamaTransport, Orchestrator
 
 from audio.stt import WhisperTranscriber
 from audio.vad_recorder import VADRecorder
 from audio.wake_word import WakeWordListener
 from identity.intent_parser import extract_switch_user_intent
+from identity.intent_parser import extract_study_mode_intent
 from identity.voice_id import (
     SpeakerVerifier,
     get_current_user,
     get_known_user_ids,
     switch_user,
 )
+from vision.study_mode import StudyModeEvent, StudyModeMonitor
 from tools.add_calendar_event import add_calendar_event
 from tools.auth import get_google_credentials
 from tools.draft_email import draft_email
@@ -143,13 +146,16 @@ class RuntimeComponents:
     recorder: VADRecorder
     transcriber: WhisperTranscriber
     voice_verifier: SpeakerVerifier
+    study_mode_monitor: StudyModeMonitor
+    heavy_task_lock: threading.Lock
 
 
 
 def _handle_wake_event(runtime: RuntimeComponents) -> None:
     t0 = time.perf_counter()
     print("[state] RECORDING — capturing utterance...")
-    utterance = runtime.recorder.record_utterance()
+    with runtime.heavy_task_lock:
+        utterance = runtime.recorder.record_utterance()
     t1 = time.perf_counter()
     print(f"[timing] VAD record: {t1 - t0:.2f}s")
 
@@ -158,7 +164,8 @@ def _handle_wake_event(runtime: RuntimeComponents) -> None:
         return
 
     print("[state] TRANSCRIBING...")
-    transcript = runtime.transcriber.transcribe(utterance.samples, sample_rate=utterance.sample_rate).strip()
+    with runtime.heavy_task_lock:
+        transcript = runtime.transcriber.transcribe(utterance.samples, sample_rate=utterance.sample_rate).strip()
     t2 = time.perf_counter()
     print(f"[stt] {transcript}")
     print(f"[timing] Whisper STT: {t2 - t1:.2f}s")
@@ -167,13 +174,30 @@ def _handle_wake_event(runtime: RuntimeComponents) -> None:
         print("[stt] Empty transcript; returning to idle.")
         return
 
+    study_mode_intent = extract_study_mode_intent(transcript)
+    if study_mode_intent == "enable":
+        print("[study] Enabling study mode monitor...")
+        try:
+            runtime.study_mode_monitor.start()
+        except Exception as exc:
+            print(f"[study] Failed to enable study mode: {exc}")
+        return
+    if study_mode_intent == "disable":
+        print("[study] Disabling study mode monitor...")
+        try:
+            runtime.study_mode_monitor.stop()
+        except Exception as exc:
+            print(f"[study] Failed to disable study mode cleanly: {exc}")
+        return
+
     claimed_user = extract_switch_user_intent(transcript, known_user_ids=get_known_user_ids())
     if claimed_user:
         print(f"[state] VERIFYING — switch intent for '{claimed_user}'...")
         t_verify0 = time.perf_counter()
-        success, score = switch_user(
-            claimed_user, utterance.samples, sample_rate=utterance.sample_rate, verifier=runtime.voice_verifier,
-        )
+        with runtime.heavy_task_lock:
+            success, score = switch_user(
+                claimed_user, utterance.samples, sample_rate=utterance.sample_rate, verifier=runtime.voice_verifier,
+            )
         t_verify1 = time.perf_counter()
         print(f"[timing] ECAPA verify: {t_verify1 - t_verify0:.2f}s")
         if success:
@@ -186,10 +210,47 @@ def _handle_wake_event(runtime: RuntimeComponents) -> None:
     active_user = get_current_user()
     print(f"[state] DISPATCHING — active user '{active_user}'...")
     t3 = time.perf_counter()
-    run_one_turn(runtime.orchestrator, active_user, transcript)
+    with runtime.heavy_task_lock:
+        run_one_turn(runtime.orchestrator, active_user, transcript)
     t4 = time.perf_counter()
     print(f"[timing] Orchestrator (RAG+LLM+tools): {t4 - t3:.2f}s")
     print(f"[timing] TOTAL turn: {t4 - t0:.2f}s")
+
+
+def _handle_study_mode_event(event: StudyModeEvent, orchestrator: Orchestrator, heavy_task_lock: threading.Lock) -> None:
+    if event.kind != "escalation":
+        return
+
+    current_user = get_current_user()
+    request = AgentRequest(
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are Aegis. The study-mode monitor detected repeated distractions. "
+                    "Reply with a concise, task-priority-aware coaching message. "
+                    "Do not mention internal thresholds or implementation details."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"User: {current_user}\n"
+                    f"Event: repeated distraction in study mode\n"
+                    f"Timestamp: {event.timestamp.isoformat()}\n"
+                    f"Yaw: {event.yaw_deg:.2f}\n"
+                    f"Pitch: {event.pitch_deg:.2f}\n"
+                    f"Away duration: {event.away_duration_sec:.2f}s\n"
+                    f"Rolling count: {event.rolling_window_count}"
+                ),
+            },
+        ],
+        tools=[],
+    )
+
+    print(f"[study] Routing escalation event to LLM for user '{current_user}'...")
+    with heavy_task_lock:
+        orchestrator.run(request, current_user_id=current_user)
 
 
 def main() -> None:
@@ -200,11 +261,17 @@ def main() -> None:
     print(f"[config] model={AGENT_CONFIG.model} profile={AGENT_CONFIG.hardware_profile} temp={AGENT_CONFIG.temperature}")
     transport = OllamaTransport(model=AGENT_CONFIG.model)
     orchestrator = Orchestrator(transport, max_retries=5, verbose=True)
+    heavy_task_lock = threading.Lock()
 
     voice_verifier = SpeakerVerifier()
     transcriber = WhisperTranscriber()
     recorder = VADRecorder()
     wake_listener = WakeWordListener()
+    study_mode_monitor = StudyModeMonitor(
+        config=VISION_CONFIG,
+        on_event=lambda event: _handle_study_mode_event(event, orchestrator, heavy_task_lock),
+        heavy_task_lock=heavy_task_lock,
+    )
 
     ensure_user_enrolled(get_current_user())
 
@@ -214,6 +281,8 @@ def main() -> None:
         recorder=recorder,
         transcriber=transcriber,
         voice_verifier=voice_verifier,
+        study_mode_monitor=study_mode_monitor,
+        heavy_task_lock=heavy_task_lock,
     )
 
     print("Aegis is running. Say 'aegis' to wake it up. Press Ctrl+C to exit.")
@@ -225,6 +294,8 @@ def main() -> None:
         runtime.wake_listener.listen(_on_wake)
     except KeyboardInterrupt:
         print("\n[main] Exiting on user interrupt.")
+    finally:
+        runtime.study_mode_monitor.stop()
 
 
 if __name__ == "__main__":

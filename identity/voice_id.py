@@ -186,13 +186,29 @@ def switch_user(
     sample_rate: int = 16000,
     threshold: float | None = None,
     verifier: SpeakerVerifier | None = None,
+    force_verify: bool = False,
 ) -> tuple[bool, float]:
     """Verify the claim and update the active user on success.
 
     Input: claimed user_id plus the same utterance buffer that produced the
     switch request. Output: (verified, similarity_score). No heavy models are
     loaded here if a verifier instance is provided by the caller.
+
+    If claimed_user_id is already the active user, this short-circuits before
+    running ECAPA at all -- no point re-verifying someone who's already
+    selected, and it avoids the (small but nonzero) cost of an embedding pass
+    on the Pi for a no-op switch. Score is reported as 1.0 in this case since
+    no real comparison was made.
+
+    Pass force_verify=True to always run the real ECAPA comparison even if
+    claimed_user_id matches the current user -- useful for testing whether a
+    disguised/altered voice would still pass against your own profile,
+    without needing a second enrolled user.
     """
+    if claimed_user_id == get_current_user() and not force_verify:
+        print(f"[identity] '{claimed_user_id}' is already the active user — no switch needed")
+        return True, 1.0
+
     verifier = verifier or SpeakerVerifier()
     verified, score = verifier.verify_speaker(
         claimed_user_id,

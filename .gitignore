@@ -6,3 +6,4 @@ __pycache__/
 *.pyo
 .venv/
 identity/profiles/*.npy
+userclips

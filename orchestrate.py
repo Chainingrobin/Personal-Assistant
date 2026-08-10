@@ -164,7 +164,7 @@ class Orchestrator:
     def run(
         self,
         request: AgentRequest,
-        current_user_id: str = "youssef",
+        current_user_id: str ,
     ) -> AgentResponse:
         messages = list(request.messages)
         tools = request.tools

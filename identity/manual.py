@@ -26,7 +26,7 @@ when you swap this out for real recognition.
 # consent + their own token file at credentials/tokens/<user_id>.json.
 KNOWN_USERS = ("youssef", "robin","mariam")
 
-_current_user: str = "youssef"  # default active user at startup
+_current_user: str = "mariam"  # default active user at startup
 
 
 def set_current_user(user_id: str) -> None:

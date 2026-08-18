@@ -16,6 +16,7 @@ from identity.voice_id import get_known_user_ids
 
 _STOPWORDS = {"user", "to", "please", "the", "my", "profile", "account", "voice"}
 _SWITCH_PATTERN = re.compile(r"\b(?:switch|change|swap)\b(?:\s+(?:user|account|profile|to))?\s+(?P<tail>.+)", re.IGNORECASE)
+_STUDY_MODE_PATTERN = re.compile(r"\bstudy\s+mode\b", re.IGNORECASE)
 
 
 def _normalize(value: str) -> str:
@@ -68,3 +69,33 @@ def extract_switch_user_intent(transcript: str, known_user_ids: Sequence[str] | 
 
     candidate = _clean_tail(match.group("tail"))
     return _best_match(candidate, known_user_ids)
+
+
+def extract_study_mode_intent(transcript: str) -> str | None:
+    """Return 'enable' or 'disable' when the transcript is a study-mode command.
+
+    The matching stays intentionally lightweight so the wake-word callback can
+    decide control flow without involving the LLM. We only look for an explicit
+    "study mode" phrase paired with a start/stop verb.
+    """
+
+    transcript = transcript.strip().lower()
+    if not transcript or not _STUDY_MODE_PATTERN.search(transcript):
+        return None
+
+    enable_patterns = (
+        r"\b(enable|start|turn on|turn study mode on|activate|begin|resume)\b",
+        r"\bstudy mode\b.*\b(on|enable|activate|start|begin|resume)\b",
+    )
+    disable_patterns = (
+        r"\b(disable|stop|turn off|turn study mode off|deactivate|end|pause)\b",
+        r"\bstudy mode\b.*\b(off|disable|deactivate|stop|end|pause)\b",
+    )
+
+    if any(re.search(pattern, transcript) for pattern in enable_patterns):
+        return "enable"
+
+    if any(re.search(pattern, transcript) for pattern in disable_patterns):
+        return "disable"
+
+    return None

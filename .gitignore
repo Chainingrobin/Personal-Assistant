@@ -7,3 +7,6 @@ __pycache__/
 .venv/
 identity/profiles/*.npy
 *.wav
+/venv
+.python-version
+models/eye_ghiss.onnx

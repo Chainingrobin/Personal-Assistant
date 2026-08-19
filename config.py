@@ -31,6 +31,12 @@ class AgentConfig:
     api_path: str = os.getenv("OLLAMA_API_PATH", "/api/chat")
     provider: str = os.getenv("OLLAMA_PROVIDER", "ollama")
     hardware_profile: str = os.getenv("HARDWARE_PROFILE", "desktop")
+    # Local/dev/headless toggling: use text when a working microphone is not available.
+    input_mode: str = os.getenv("INPUT_MODE", "voice").strip().lower()
+
+    def __post_init__(self) -> None:
+        if self.input_mode not in {"voice", "text"}:
+            raise ValueError("INPUT_MODE must be 'voice' or 'text'")
 
 
 @dataclass(frozen=True)

@@ -26,8 +26,10 @@ from identity.voice_id import (
     SpeakerVerifier,
     get_current_user,
     get_known_user_ids,
+    set_current_user,
     switch_user,
 )
+from text_input import TextInputSource
 from vision.study_mode import StudyModeEvent, StudyModeMonitor
 from tools.add_calendar_event import add_calendar_event
 from tools.auth import get_google_credentials
@@ -217,6 +219,46 @@ def _handle_wake_event(runtime: RuntimeComponents) -> None:
     print(f"[timing] TOTAL turn: {t4 - t0:.2f}s")
 
 
+def _handle_text_transcript(
+    orchestrator: Orchestrator,
+    study_mode_monitor: StudyModeMonitor,
+    heavy_task_lock: threading.Lock,
+    transcript: str,
+) -> None:
+    """Handle one text transcript using the same control/dispatch rules as voice."""
+    if not transcript:
+        return
+
+    study_mode_intent = extract_study_mode_intent(transcript)
+    if study_mode_intent == "enable":
+        print("[study] Enabling study mode monitor...")
+        try:
+            study_mode_monitor.start()
+        except Exception as exc:
+            print(f"[study] Failed to enable study mode: {exc}")
+        return
+    if study_mode_intent == "disable":
+        print("[study] Disabling study mode monitor...")
+        try:
+            study_mode_monitor.stop()
+        except Exception as exc:
+            print(f"[study] Failed to disable study mode cleanly: {exc}")
+        return
+
+    claimed_user = extract_switch_user_intent(transcript, known_user_ids=get_known_user_ids())
+    if claimed_user:
+        # Text mode has no speaker signal to verify; voice mode remains unchanged above.
+        set_current_user(claimed_user)
+        ensure_user_enrolled(claimed_user)
+        print(f"[identity] Switched to {claimed_user} from text input.")
+        return
+
+    active_user = get_current_user()
+    print(f"[state] DISPATCHING — active user '{active_user}'...")
+    with heavy_task_lock:
+        run_one_turn(orchestrator, active_user, transcript)
+
+
 def _handle_study_mode_event(event: StudyModeEvent, orchestrator: Orchestrator, heavy_task_lock: threading.Lock) -> None:
     if event.kind != "escalation":
         return
@@ -253,6 +295,14 @@ def _handle_study_mode_event(event: StudyModeEvent, orchestrator: Orchestrator, 
         orchestrator.run(request, current_user_id=current_user)
 
 
+def _create_study_mode_monitor(orchestrator: Orchestrator, heavy_task_lock: threading.Lock) -> StudyModeMonitor:
+    return StudyModeMonitor(
+        config=VISION_CONFIG,
+        on_event=lambda event: _handle_study_mode_event(event, orchestrator, heavy_task_lock),
+        heavy_task_lock=heavy_task_lock,
+    )
+
+
 def main() -> None:
     """Boot the assistant and run the wake-word loop until interrupted.
 
@@ -263,15 +313,29 @@ def main() -> None:
     orchestrator = Orchestrator(transport, max_retries=5, verbose=True)
     heavy_task_lock = threading.Lock()
 
+    if AGENT_CONFIG.input_mode == "text":
+        # Local/dev/headless mode: bypass wake word, VAD, Whisper, and ECAPA entirely.
+        study_mode_monitor = _create_study_mode_monitor(orchestrator, heavy_task_lock)
+        ensure_user_enrolled(get_current_user())
+        text_input = TextInputSource()
+        print("Aegis text mode is running. Type a command; press Ctrl+C or send EOF to exit.")
+        try:
+            while True:
+                transcript = text_input.read_transcript()
+                if transcript is None:
+                    break
+                _handle_text_transcript(orchestrator, study_mode_monitor, heavy_task_lock, transcript)
+        except KeyboardInterrupt:
+            print("\n[main] Exiting on user interrupt.")
+        finally:
+            study_mode_monitor.stop()
+        return
+
     voice_verifier = SpeakerVerifier()
     transcriber = WhisperTranscriber()
     recorder = VADRecorder()
     wake_listener = WakeWordListener()
-    study_mode_monitor = StudyModeMonitor(
-        config=VISION_CONFIG,
-        on_event=lambda event: _handle_study_mode_event(event, orchestrator, heavy_task_lock),
-        heavy_task_lock=heavy_task_lock,
-    )
+    study_mode_monitor = _create_study_mode_monitor(orchestrator, heavy_task_lock)
 
     ensure_user_enrolled(get_current_user())
 

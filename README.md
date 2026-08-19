@@ -79,6 +79,39 @@ Personal-Assistant/
 - Google OAuth tokens are stored per user so one person’s account never overwrites another’s.
 - The laptop is used for first-time consent; the Pi only reuses copied token files.
 
+## Display
+
+This project targets a 0.96" SSD1306 I2C monochrome OLED panel at 128x64 with a 4-wire connection: VCC, GND, SDA, and SCL. The display module is intentionally backend-agnostic so the same code runs with either a real adapter on the Raspberry Pi or a local emulator window on a laptop.
+
+Use the environment switch to choose the rendering path:
+
+```bash
+AEGIS_DISPLAY_BACKEND=emulator
+# or on the Pi:
+AEGIS_DISPLAY_BACKEND=ssd1306
+```
+
+The `.env` file can set either value. The module uses `AEGIS_DISPLAY_I2C_PORT` and `AEGIS_DISPLAY_I2C_ADDR` to locate the device on the Pi; the default address is `0x3C`.
+
+To verify wiring on the Pi once the hardware arrives:
+
+```bash
+sudo raspi-config
+# enable I2C
+
+i2cdetect -y 1
+```
+
+If the SSD1306 is connected correctly, it should appear at `0x3C`.
+
+To run the emulator locally:
+
+```bash
+AEGIS_DISPLAY_BACKEND=emulator python main.py
+```
+
+This opens a pygame window showing the same 128x64 render path the Pi uses. To add a new display state, add the bitmap to `display/icons.py`, add the enum member and `STATE_CONFIG` entry in `display/states.py`, and the renderer consumes it automatically without any other call-site changes.
+
 ## Study Mode
 
 Study mode is a voice-activated camera monitor that watches head pose and flags repeated looking-away behavior. Start it by saying `aegis enable study mode` after the wake word, and stop it with `aegis disable study mode`.

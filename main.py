@@ -33,9 +33,68 @@ from tools.draft_email import draft_email
 from tools.get_calendar_events import get_calendar_events
 from tools.query_rag import query_rag
 from tools.read_email import read_email
-
+from identity.user_profiles import get_title
 
 ALL_TOOLS = [read_email, get_calendar_events, add_calendar_event, draft_email]
+
+
+# ---------------------------------------------------------------------------
+# Mood detection — reads the user's own words so Aegis can answer in a
+# matching tone (e.g. "add my sister's birthday party" -> excited).
+# Keyword-based on purpose: no extra model, no added latency, easy to extend.
+# ---------------------------------------------------------------------------
+
+EXCITED_KEYWORDS = {
+    "celebrate", "celebration", "birthday", "party", "wedding", "engagement",
+    "congratulations", "congrats", "yay", "excited", "promotion", "promoted",
+    "graduation", "graduate", "won", "win", "winning", "anniversary",
+    "surprise party", "good news", "great news",
+}
+
+WARNING_KEYWORDS = {
+    "help", "trouble", "emergency", "urgent", "problem", "broken", "fire",
+    "danger", "scared", "worried", "stressed", "stress", "panic", "crisis",
+    "hurry", "asap", "immediately",
+}
+
+SLOW_KEYWORDS = {
+    "slowly", "slow down", "confused", "don't understand", "didn't understand",
+    "explain again", "one more time", "repeat that", "say that again",
+    "but slowly",
+}
+
+
+def detect_input_mood(user_input: str) -> str | None:
+    """Look at the user's own phrasing and guess an emotional tone.
+    Returns None if nothing matches, so callers can fall back to other logic."""
+    lower = user_input.lower()
+
+    if any(phrase in lower for phrase in EXCITED_KEYWORDS):
+        return "excited"
+    if any(phrase in lower for phrase in WARNING_KEYWORDS):
+        return "warning"
+    if any(phrase in lower for phrase in SLOW_KEYWORDS):
+        return "slow"
+    return None
+
+
+def pick_mood(result, input_mood: str | None) -> str:
+    """Decide the final speaking mood for a turn's response.
+
+    Priority:
+      1. A tool error always wins — the user must hear that something broke.
+      2. The mood detected in the user's own request (celebration, distress,
+         confusion) — this is what makes Aegis feel like it matches your tone.
+      3. A successful create-type action (calendar/email) defaults to excited.
+      4. Otherwise, normal.
+    """
+    if result.tool_result and "[ERROR]" in result.tool_result:
+        return "warning"
+    if input_mood:
+        return input_mood
+    if result.tool_called in ("add_calendar_event", "draft_email"):
+        return "excited"
+    return "normal"
 
 
 def ensure_user_enrolled(user_id: str) -> None:
@@ -113,7 +172,10 @@ def run_one_turn(orchestrator: Orchestrator, speaker: PiperSpeaker, user_id: str
         tools=[read_email, get_calendar_events, add_calendar_event, draft_email],
     )
     result = orchestrator.run(request, current_user_id=user_id)
-    speaker.speak(result.raw_output)
+
+    input_mood = detect_input_mood(user_input)
+    mood = pick_mood(result, input_mood)
+    speaker.speak(result.raw_output, mood=mood)
     return result
 
 
@@ -129,6 +191,11 @@ class RuntimeComponents:
 
 def _handle_wake_event(runtime: RuntimeComponents) -> None:
     t0 = time.perf_counter()
+
+    active_user = get_current_user()
+    greeting = f"Hey {get_title(active_user)}, how can I help you today?"
+    runtime.speaker.speak(greeting, mood="greeting")
+
     print("[state] RECORDING - capturing utterance...")
     utterance = runtime.recorder.record_utterance()
     t1 = time.perf_counter()
@@ -171,7 +238,6 @@ def _handle_wake_event(runtime: RuntimeComponents) -> None:
     t4 = time.perf_counter()
     print(f"[timing] Orchestrator (RAG+LLM+tools): {t4 - t3:.2f}s")
     print(f"[timing] TOTAL turn: {t4 - t0:.2f}s")
-
 
 def main() -> None:
     print(f"[config] model={AGENT_CONFIG.model} profile={AGENT_CONFIG.hardware_profile} temp={AGENT_CONFIG.temperature}")

@@ -13,5 +13,8 @@ soundfile
 speechbrain
 mediapipe == 0.10.9
 opencv-python
+luma.oled
+luma.emulator
+Pillow
 webrtcvad-wheels; platform_system == "Windows"
 webrtcvad; platform_system != "Windows"

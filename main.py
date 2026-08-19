@@ -4,7 +4,7 @@ Entry point / runtime loop for the Aegis assistant.
 This file owns the full audio state machine:
 wake word -> record utterance -> transcribe -> optional voice verification ->
 orchestrate one command -> idle. The LLM orchestration itself still lives in
-orchestrate.py and remains unchanged.
+orchestrate.py and remains unchanged (aside from display-state calls).
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from config import AGENT_CONFIG, VISION_CONFIG
+from config import AGENT_CONFIG, VISION_CONFIG, DISPLAY_CONFIG
 from orchestrate import AgentRequest, OllamaTransport, Orchestrator
 
 from audio.stt import WhisperTranscriber
@@ -37,6 +37,11 @@ from tools.draft_email import draft_email
 from tools.get_calendar_events import get_calendar_events
 from tools.query_rag import query_rag
 from tools.read_email import read_email
+
+from display import init_display, set_state, shutdown as display_shutdown
+from display.states import DisplayState
+
+init_display(DISPLAY_CONFIG)
 
 
 ALL_TOOLS = [read_email, get_calendar_events, add_calendar_event, draft_email]
@@ -155,6 +160,7 @@ class RuntimeComponents:
 
 def _handle_wake_event(runtime: RuntimeComponents) -> None:
     t0 = time.perf_counter()
+    set_state(DisplayState.LISTENING)
     print("[state] RECORDING — capturing utterance...")
     with runtime.heavy_task_lock:
         utterance = runtime.recorder.record_utterance()
@@ -163,6 +169,7 @@ def _handle_wake_event(runtime: RuntimeComponents) -> None:
 
     if utterance is None or utterance.samples.size == 0:
         print("[audio] No speech captured; returning to idle.")
+        set_state(DisplayState.IDLE)
         return
 
     print("[state] TRANSCRIBING...")
@@ -174,6 +181,7 @@ def _handle_wake_event(runtime: RuntimeComponents) -> None:
 
     if not transcript:
         print("[stt] Empty transcript; returning to idle.")
+        set_state(DisplayState.IDLE)
         return
 
     study_mode_intent = extract_study_mode_intent(transcript)
@@ -181,8 +189,10 @@ def _handle_wake_event(runtime: RuntimeComponents) -> None:
         print("[study] Enabling study mode monitor...")
         try:
             runtime.study_mode_monitor.start()
+            set_state(DisplayState.STUDY_MODE)
         except Exception as exc:
             print(f"[study] Failed to enable study mode: {exc}")
+            set_state(DisplayState.IDLE)
         return
     if study_mode_intent == "disable":
         print("[study] Disabling study mode monitor...")
@@ -190,6 +200,8 @@ def _handle_wake_event(runtime: RuntimeComponents) -> None:
             runtime.study_mode_monitor.stop()
         except Exception as exc:
             print(f"[study] Failed to disable study mode cleanly: {exc}")
+        finally:
+            set_state(DisplayState.IDLE)
         return
 
     claimed_user = extract_switch_user_intent(transcript, known_user_ids=get_known_user_ids())
@@ -207,16 +219,20 @@ def _handle_wake_event(runtime: RuntimeComponents) -> None:
             print(f"[identity] Switched to {claimed_user} with similarity={score:.3f}")
         else:
             print(f"[identity] Voice verification failed for {claimed_user}; score={score:.3f}")
+        set_state(DisplayState.IDLE)
         return
 
     active_user = get_current_user()
     print(f"[state] DISPATCHING — active user '{active_user}'...")
     t3 = time.perf_counter()
     with runtime.heavy_task_lock:
+        # NOTE: THINKING / TOOL_* display states are set inside Orchestrator.run
+        # itself (orchestrate.py), since that's where tool-call detection happens.
         run_one_turn(runtime.orchestrator, active_user, transcript)
     t4 = time.perf_counter()
     print(f"[timing] Orchestrator (RAG+LLM+tools): {t4 - t3:.2f}s")
     print(f"[timing] TOTAL turn: {t4 - t0:.2f}s")
+    set_state(DisplayState.IDLE)
 
 
 def _handle_text_transcript(
@@ -263,7 +279,14 @@ def _handle_study_mode_event(event: StudyModeEvent, orchestrator: Orchestrator, 
     if event.kind != "escalation":
         return
 
+    set_state(DisplayState.DISTRACTION_ALERT)
+    # Hold the alert on screen briefly — otherwise Orchestrator.run immediately
+    # sets THINKING at the start of its reasoning pass and the alert never
+    # actually becomes visible to the user.
+    time.sleep(1.5)
+
     current_user = get_current_user()
+    
     request = AgentRequest(
         messages=[
             {
@@ -293,6 +316,10 @@ def _handle_study_mode_event(event: StudyModeEvent, orchestrator: Orchestrator, 
     print(f"[study] Routing escalation event to LLM for user '{current_user}'...")
     with heavy_task_lock:
         orchestrator.run(request, current_user_id=current_user)
+
+    # Study mode is still active after handling one distraction escalation,
+    # so return the display to the STUDY_MODE indicator rather than IDLE.
+    set_state(DisplayState.STUDY_MODE)
 
 
 def _create_study_mode_monitor(orchestrator: Orchestrator, heavy_task_lock: threading.Lock) -> StudyModeMonitor:
@@ -338,6 +365,7 @@ def main() -> None:
     study_mode_monitor = _create_study_mode_monitor(orchestrator, heavy_task_lock)
 
     ensure_user_enrolled(get_current_user())
+    set_state(DisplayState.IDLE)
 
     runtime = RuntimeComponents(
         orchestrator=orchestrator,
@@ -360,6 +388,7 @@ def main() -> None:
         print("\n[main] Exiting on user interrupt.")
     finally:
         runtime.study_mode_monitor.stop()
+        display_shutdown()
 
 
 if __name__ == "__main__":

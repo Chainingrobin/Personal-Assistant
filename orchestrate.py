@@ -12,8 +12,10 @@ Optimizations applied vs. the original:
      so the user sees output start ~1-2 s into a 10-15 s inference instead of
      waiting for the whole thing.
 
-Nothing in main.py needs to change — the public API (Orchestrator, OllamaTransport,
-AgentRequest, AgentResponse) is identical to the original.
+Display-state calls added: THINKING before every tool-selection pass, the
+matching TOOL_* state once a tool call is actually detected, and advance()
+once that tool's result comes back. Nothing else about main.py's public API
+(Orchestrator, OllamaTransport, AgentRequest, AgentResponse) has changed.
 """
 
 import logging
@@ -28,6 +30,9 @@ from tools.get_calendar_events import get_calendar_events
 from tools.add_calendar_event import add_calendar_event
 from tools.draft_email import draft_email
 from tools.query_rag import query_rag
+
+from display import set_state, advance
+from display.states import DisplayState
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +146,16 @@ TOOL_REGISTRY: dict[str, Callable] = {
     "query_rag":            query_rag,
 }
 
+# Maps a tool name to the display state that should show while it runs.
+# Any tool not listed here just stays on THINKING (no display change).
+TOOL_STATE_MAP: dict[str, DisplayState] = {
+    "read_email":          DisplayState.TOOL_GMAIL,
+    "draft_email":         DisplayState.TOOL_GMAIL,
+    "get_calendar_events": DisplayState.TOOL_CALENDAR,
+    "add_calendar_event":  DisplayState.TOOL_CALENDAR,
+    "query_rag":           DisplayState.TOOL_RAG,
+}
+
 
 # ---------------------------------------------------------------------------
 # Orchestrator
@@ -173,6 +188,7 @@ class Orchestrator:
             self._log(f"\n--- Attempt {attempt} of {self.max_retries} ---")
 
             # ── Pass 1: tool selection (blocking, full context) ──────────────
+            set_state(DisplayState.THINKING)
             response = self.transport.chat(messages, tools)
             msg = response.get("message", {})
             reasoning_text = msg.get("content", "").strip()
@@ -185,6 +201,8 @@ class Orchestrator:
                 self._log(f"✅ Tool selected: {name}")
                 self._log(f"📋 Arguments: {args if args else '(empty)'}")
 
+                set_state(TOOL_STATE_MAP.get(name, DisplayState.THINKING))
+
                 fn = TOOL_REGISTRY.get(name)
                 if fn:
                     args["user_id"] = current_user_id
@@ -195,6 +213,8 @@ class Orchestrator:
                         tool_result = f"[ERROR] Tool {name} failed: {exc}"
                 else:
                     tool_result = f"[ERROR] Unknown tool: {name}"
+
+                advance()  # e.g. "Mail read" / "Events read" / "Recalled"
 
                 self._log(f"📦 Raw tool result:\n{tool_result}")
 
@@ -223,6 +243,7 @@ class Orchestrator:
                 ]
 
                 self._log("🖨️  Streaming response:")
+                set_state(DisplayState.THINKING)
                 final_text = self.transport.chat_stream(summary_messages)
 
                 return AgentResponse(

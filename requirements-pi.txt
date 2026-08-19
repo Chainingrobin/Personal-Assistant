@@ -1,3 +1,4 @@
 # Pi-only camera backend support.
 # picamera2 depends on the Raspberry Pi libcamera stack and may not install on laptops.
+-r requirements.txt
 picamera2

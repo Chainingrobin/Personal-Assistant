@@ -1,21 +1,22 @@
 """Microphone recording with VAD-based utterance end detection.
-
 This module wraps the lightweight `webrtcvad` package and `sounddevice` input
 streaming. Install with `pip install webrtcvad sounddevice`. The recorder uses
 fixed 20 ms frames at 16 kHz, starts capturing after wake-word detection, and
 returns once silence has lasted long enough to mark the end of the utterance.
 No model downloads occur here; VAD is pure CPU and usually negligible on a Pi 5.
+
+Pi note: USB audio adapters commonly support only 44100 Hz natively and reject
+16000 Hz outright (PortAudio error -9997). The recorder therefore opens the
+InputStream at the device's reported default_samplerate and resamples each
+captured frame down to the 16 kHz target before passing it to webrtcvad.
+The RecordedAudio output is always 16 kHz regardless of the capture rate.
 """
-
 from __future__ import annotations
-
 import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Deque
-
 import numpy as np
-
 try:
     import sounddevice as sd
 except ImportError as exc:  # pragma: no cover - import guard
@@ -23,7 +24,6 @@ except ImportError as exc:  # pragma: no cover - import guard
     _SOUNDDEVICE_ERROR = exc
 else:
     _SOUNDDEVICE_ERROR = None
-
 try:
     import webrtcvad
 except ImportError as exc:  # pragma: no cover - import guard
@@ -32,15 +32,15 @@ except ImportError as exc:  # pragma: no cover - import guard
 else:
     _WEBRTCVAD_ERROR = None
 
+from audio.resample import resample_frame
+
 
 @dataclass(frozen=True)
 class RecordedAudio:
     """Container for a captured utterance.
-
     samples: mono int16 PCM audio with shape (n,). sample_rate is always 16000.
     duration_seconds is the captured duration for logging and guard rails.
     """
-
     samples: np.ndarray
     sample_rate: int
     duration_seconds: float
@@ -48,18 +48,15 @@ class RecordedAudio:
 
 class VADRecorder:
     """Record one utterance and stop when silence is detected.
-
     Input: none; the recorder owns the microphone stream. Output: a
     RecordedAudio object or None if no speech was captured. On a Pi 5 the VAD
     loop is cheap because it processes 20 ms frames with a small rule-based model.
-
     Speech hangover smoothing: a single noise-triggered "speech" frame during
     real silence (e.g. a fan hum blip) no longer resets the silence counter.
     Only `speech_hangover_frames` consecutive speech-flagged frames re-arm the
     silence counter reset, which makes end-of-utterance detection resistant to
     intermittent background noise while still responding quickly to real speech.
     """
-
     def __init__(
         self,
         sample_rate: int = 16000,
@@ -78,7 +75,6 @@ class VADRecorder:
             raise ImportError("sounddevice is required for microphone recording") from _SOUNDDEVICE_ERROR
         if webrtcvad is None:
             raise ImportError("webrtcvad is required for utterance segmentation") from _WEBRTCVAD_ERROR
-
         self.sample_rate = sample_rate
         self.frame_duration_ms = frame_duration_ms
         self.frame_samples = int(sample_rate * frame_duration_ms / 1000)
@@ -92,23 +88,42 @@ class VADRecorder:
         self.debug_interval_frames = debug_interval_frames
         self.vad = webrtcvad.Vad(aggressiveness)
 
+        # Detect the device's native sample rate so we can open the InputStream
+        # at a rate the hardware actually supports, then resample to target.
+        device_info = sd.query_devices(device, "input") if sd is not None else {}
+        self.device_rate = int(device_info.get("default_samplerate", sample_rate))
+        # Scale frame size proportionally so each block still represents ~20ms
+        self.device_frame_samples = int(round(self.frame_samples * self.device_rate / sample_rate))
+
+        if self.debug and self.device_rate != self.sample_rate:
+            print(
+                f"[vad-debug] device native rate={self.device_rate} Hz, "
+                f"target={self.sample_rate} Hz — resampling enabled"
+            )
+
     def _read_frame(self, stream: sd.InputStream) -> np.ndarray:
-        """Read one 20 ms frame from the microphone as mono int16 PCM."""
-        frame, _ = stream.read(self.frame_samples)
+        """Read one 20 ms frame from the microphone as mono int16 PCM at target rate.
+        Captures at device_rate and resamples down to sample_rate so webrtcvad
+        always receives correctly-sized 16 kHz frames.
+        """
+        frame, _ = stream.read(self.device_frame_samples)
         frame = np.asarray(frame, dtype=np.int16)
         if frame.ndim == 2:
             frame = frame[:, 0]
-        return np.ascontiguousarray(frame.reshape(-1))
+        frame = np.ascontiguousarray(frame.reshape(-1))
+        frame = resample_frame(frame, self.device_rate, self.sample_rate)
+        # Guard against off-by-one rounding from the 44100→16000 ratio
+        if frame.shape[0] != self.frame_samples:
+            frame = np.resize(frame, self.frame_samples)
+        return frame
 
     def record_utterance(self) -> RecordedAudio | None:
         """Record until silence marks the end of the utterance.
-
         Output: mono int16 PCM buffer or None if the user never spoke. This call
         usually runs for 3-15 seconds on the Pi depending on the utterance length.
         """
         if sd is None:
             raise ImportError("sounddevice is required for microphone recording") from _SOUNDDEVICE_ERROR
-
         t_start = time.perf_counter()
         recorded_frames: list[bytes] = []
         pre_roll: Deque[bytes] = deque(maxlen=self.pre_roll_frames)
@@ -126,28 +141,24 @@ class VADRecorder:
         # utterance's real duration, which previously prevented the silence
         # break condition from ever firing.
         min_elapsed_frames = int(self.min_utterance_seconds * 1000 / self.frame_duration_ms)
-
         if self.debug:
             print(
                 f"[vad-debug] starting: silence_limit={silence_limit} frames "
                 f"({self.silence_duration_seconds}s), min_elapsed_frames={min_elapsed_frames}, "
                 f"hangover={self.speech_hangover_frames}"
             )
-
         hit_max_frames = False
-
         with sd.InputStream(
-            samplerate=self.sample_rate,
+            samplerate=self.device_rate,
             channels=1,
             dtype="int16",
-            blocksize=self.frame_samples,
+            blocksize=self.device_frame_samples,
             device=self.device,
         ) as stream:
             for frame_index in range(max_frames):
                 frame = self._read_frame(stream)
                 frame_bytes = frame.tobytes()
                 is_speech = self.vad.is_speech(frame_bytes, self.sample_rate)
-
                 if not speech_started:
                     pre_roll.append(frame_bytes)
                     if is_speech:
@@ -160,10 +171,8 @@ class VADRecorder:
                         if self.debug:
                             print(f"[vad-debug] speech started at frame {frame_index}")
                     continue
-
                 recorded_frames.append(frame_bytes)
                 frames_since_speech_start += 1
-
                 if is_speech:
                     speech_frames += 1
                     speech_hangover_counter += 1
@@ -174,7 +183,6 @@ class VADRecorder:
                 else:
                     speech_hangover_counter = 0
                     silence_frames += 1
-
                 if self.debug and frame_index % self.debug_interval_frames == 0:
                     elapsed = frame_index * self.frame_duration_ms / 1000.0
                     print(
@@ -182,23 +190,19 @@ class VADRecorder:
                         f"speech_frames={speech_frames} silence_frames={silence_frames}/{silence_limit} "
                         f"elapsed_since_speech={frames_since_speech_start}/{min_elapsed_frames}"
                     )
-
                 if frames_since_speech_start >= min_elapsed_frames and silence_frames >= silence_limit:
                     if self.debug:
                         print(f"[vad-debug] silence threshold reached at frame {frame_index}; ending utterance")
                     break
             else:
                 hit_max_frames = speech_started
-
         if hit_max_frames and self.debug:  # noqa: SIM102 - kept for clarity
             print("[vad-debug] WARNING: hit max_utterance_seconds cap without detecting silence — "
                   "check for background noise, or raise aggressiveness / speech_hangover_frames")
-
         if not recorded_frames:
             if self.debug:
                 print(f"[vad-debug] no speech captured ({time.perf_counter() - t_start:.2f}s elapsed)")
             return None
-
         audio = np.frombuffer(b"".join(recorded_frames), dtype=np.int16).copy()
         duration_seconds = float(audio.shape[0]) / float(self.sample_rate)
         if self.debug:

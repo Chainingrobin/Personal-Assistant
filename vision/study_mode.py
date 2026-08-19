@@ -1,6 +1,6 @@
 """Study-mode monitor for head-pose-based procrastination detection."""
 from __future__ import annotations
-
+import cv2
 import threading
 import time
 from collections import deque
@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover - optional output path
 
 from config import VisionConfig
 from .camera_backend import CameraBackend, get_camera_backend
-from .display import close_debug_window, render_debug_frame, show_debug_frame
+from .display import close_debug_window, get_headless_preview_path, render_debug_frame, show_debug_frame
 from .head_pose import HeadPoseDetection, HeadPoseDetector
 
 EventKind = Literal["distraction", "escalation"]
@@ -41,7 +41,7 @@ def _timestamp_label(timestamp: datetime | None = None) -> str:
 def _play_notification_sound() -> None:
     if sd is None:
         return
-    sample_rate = 22050
+    sample_rate = 44100
     duration_sec = 0.25
     frequency_hz = 880.0
     t = np.linspace(0.0, duration_sec, int(sample_rate * duration_sec), endpoint=False)
@@ -153,6 +153,9 @@ class StudyModeMonitor:
         )
         samples_yaw: list[float] = []
         samples_pitch: list[float] = []
+        frames_seen = 0
+        detections_seen = 0
+        last_feedback_time = 0.0
         deadline = time.monotonic() + self.config.calibration_duration_sec
         frame_interval = 1.0 / max(1, self.config.camera_fps)
         next_frame_time = time.monotonic()
@@ -166,11 +169,31 @@ class StudyModeMonitor:
             # cheap and must stay independent of STT/voice-ID/LLM so the
             # wake-word thread is never starved waiting on this loop.
             frame = self._camera_backend.read_frame() if self._camera_backend is not None else None
+            frames_seen += 1
+
+            # --- TEMP DIAGNOSTIC: dump the raw frame once, unconditionally ---
+            if frames_seen == 1:
+                if frame is None:
+                    print("[diag] read_frame() returned None on first read")
+                else:
+                    print(f"[diag] frame shape={frame.shape} dtype={frame.dtype}")
+                    cv2.imwrite("/tmp/aegis_raw_frame.jpg", frame)
+                    print("[diag] wrote /tmp/aegis_raw_frame.jpg")
+            # --- end diagnostic ---
+
             detection = detector.process_frame(frame) if frame is not None else None
 
             next_frame_time = time.monotonic() + frame_interval
             if detection is None:
+                now = time.monotonic()
+                if now - last_feedback_time >= 1.5:
+                    last_feedback_time = now
+                    print(
+                        f"[study] Calibration sees no face yet ({frames_seen} frames checked, {detections_seen} detections). "
+                        f"If GUI is unavailable, watch {get_headless_preview_path().resolve()} for the latest preview."
+                    )
                 continue
+            detections_seen += 1
             samples_yaw.append(detection.yaw_deg)
             samples_pitch.append(detection.pitch_deg)
             if self.config.show_debug_window:
@@ -180,7 +203,8 @@ class StudyModeMonitor:
         if len(samples_yaw) < 3:
             raise RuntimeError(
                 "Calibration failed because too few face samples were collected. "
-                "Make sure your face is visible and well lit during the calibration window."
+                "Make sure your face is visible and well lit during the calibration window. "
+                f"If the GUI is unavailable, inspect {get_headless_preview_path().resolve()} for the camera preview."
             )
         # Median resists a single blink or transient head twitch better than the mean.
         baseline_yaw = float(np.median(samples_yaw))

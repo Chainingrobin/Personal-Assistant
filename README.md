@@ -87,15 +87,25 @@ When it starts, the assistant runs a short calibration pass. During calibration,
 
 If repeated distraction events happen in the rolling window, the monitor emits an escalation event that is routed back through the existing orchestrator/LLM path.
 
-### Camera backends
+## Camera Setup
 
-The camera path is selected with `camera_backend`:
+The camera path is selected with `AEGIS_CAMERA_BACKEND`:
 
-- `auto` tries Picamera2 first when a CSI camera is detected, then falls back to a webcam.
+- `auto` checks for `rpicam-vid` and a detected CSI camera first, then falls back to a webcam.
 - `webcam` forces OpenCV `VideoCapture` for laptop or USB-camera testing.
-- `picamera` forces the Pi 5 CSI path and raises a descriptive error if Picamera2 or the camera is missing.
+- `picamera` forces the Pi 5 CSI path and raises a descriptive error if `rpicam-vid` or the camera is missing.
 
-Auto-detection is intentionally conservative. On the Raspberry Pi 5, the CSI camera should be opened through Picamera2/libcamera instead of `cv2.VideoCapture`, because the latter is the wrong stack for the native Pi camera pipeline. If Picamera2 is not installed or reports no CSI camera, the code falls back to a webcam in `auto` mode and fails loudly only when you explicitly request `picamera`.
+On this repo's pyenv-managed Python 3.11.9 venv, the Raspberry Pi camera path does not import Picamera2/libcamera Python bindings at all. Those bindings are compiled against the system Python ABI on Debian, so `import libcamera` fails inside the venv even though the camera hardware is present. The repo now uses `rpicam-vid` as a subprocess and pipes raw YUV420/I420 frames over stdout instead. That keeps the existing venv intact and avoids the ABI mismatch entirely.
+
+If the Pi camera stops opening, run the repo-local diagnostic script once from the activated venv:
+
+```bash
+python scripts/diagnose_camera.py
+```
+
+The script prints Python version, `cv2`, `picamera2` import behavior, `rpicam-vid` discovery, camera enumeration, `/dev/video*`, and group membership in one pass.
+
+If the OpenCV window cannot open because Qt/Wayland is unavailable, study mode writes the latest annotated preview frame to `.aegis_debug/study_mode_latest.jpg` and logs that path periodically while calibration is running.
 
 ### Configuration
 
@@ -111,11 +121,13 @@ All of these values can be set through environment variables in the same style a
 - `escalation_window_sec` / `AEGIS_ESCALATION_WINDOW_SEC`: rolling window for escalation counting (`300.0`)
 - `show_debug_window` / `AEGIS_SHOW_DEBUG_WINDOW`: enable the OpenCV debug window (`True`)
 
+`requirements.txt` deliberately pins `mediapipe==0.10.9`. Avoid upgrading it casually when adding packages, because protobuf resolver changes have silently bumped it in the past and broken the vision stack.
+
 ### Testing and deployment
 
 - On a laptop, set `camera_backend=webcam` if you want to force the USB/laptop camera path.
 - On the Raspberry Pi 5, keep `camera_backend=auto` or set `picamera` explicitly once the CSI camera is known to work.
-- If the Pi camera is not detected, check the ribbon cable seating, confirm `libcamera-hello` works, and verify the camera shows up in Picamera2/libcamera tooling.
+- If the Pi camera is not detected, check the ribbon cable seating, confirm `rpicam-vid --list-cameras` works, and rerun `python scripts/diagnose_camera.py`.
 - If you are running headless on the Pi, set `show_debug_window=False` so OpenCV does not try to open a GUI window.
 
 ## Study mode config reference

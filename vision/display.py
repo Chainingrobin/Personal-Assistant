@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import cv2
 import mediapipe as mp
 
@@ -12,6 +15,31 @@ _DRAWING_UTILS = mp.solutions.drawing_utils
 _FACE_MESH_CONNECTIONS = mp.solutions.face_mesh.FACEMESH_TESSELATION
 _LANDMARK_STYLE = _DRAWING_UTILS.DrawingSpec(color=(0, 255, 0), thickness=1, circle_radius=1)
 _CONNECTION_STYLE = _DRAWING_UTILS.DrawingSpec(color=(0, 180, 255), thickness=1, circle_radius=1)
+_GUI_DISABLED_REASON: str | None = None
+_HEADLESS_PREVIEW_PATH = Path(".aegis_debug/study_mode_latest.jpg")
+_LAST_HEADLESS_PREVIEW_LOG_TS: float | None = None
+_QT_PLATFORM_FORCED_XCB = False
+
+
+def _qt_xcb_plugin_available() -> bool:
+    plugin_path = Path(cv2.__file__).resolve().parent / "qt" / "plugins" / "platforms" / "libqxcb.so"
+    return plugin_path.exists()
+
+
+def _prefer_xcb_qt_platform() -> None:
+    global _QT_PLATFORM_FORCED_XCB
+    if _QT_PLATFORM_FORCED_XCB:
+        return
+    if os.environ.get("QT_QPA_PLATFORM") in {None, "", "wayland"} and _qt_xcb_plugin_available():
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
+        _QT_PLATFORM_FORCED_XCB = True
+
+
+_prefer_xcb_qt_platform()
+
+
+def get_headless_preview_path() -> Path:
+    return _HEADLESS_PREVIEW_PATH
 
 
 def _banner_color(status: str) -> tuple[int, int, int]:
@@ -82,11 +110,42 @@ def render_debug_frame(
 
 
 def show_debug_frame(window_name: str, frame_bgr) -> None:
-    cv2.imshow(window_name, frame_bgr)
-    cv2.waitKey(1)
+    global _GUI_DISABLED_REASON
+    if _GUI_DISABLED_REASON is not None:
+        _HEADLESS_PREVIEW_PATH.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(_HEADLESS_PREVIEW_PATH), frame_bgr)
+        global _LAST_HEADLESS_PREVIEW_LOG_TS
+        from time import monotonic
+
+        now = monotonic()
+        if _LAST_HEADLESS_PREVIEW_LOG_TS is None or now - _LAST_HEADLESS_PREVIEW_LOG_TS >= 2.0:
+            _LAST_HEADLESS_PREVIEW_LOG_TS = now
+            print(f"[study] Debug preview saved to {_HEADLESS_PREVIEW_PATH.resolve()}")
+        return
+
+    try:
+        cv2.imshow(window_name, frame_bgr)
+        cv2.waitKey(1)
+    except cv2.error as exc:
+        if not _QT_PLATFORM_FORCED_XCB and _qt_xcb_plugin_available():
+            _prefer_xcb_qt_platform()
+            try:
+                cv2.imshow(window_name, frame_bgr)
+                cv2.waitKey(1)
+                return
+            except cv2.error:
+                pass
+
+        _GUI_DISABLED_REASON = str(exc)
+        print(
+            "[study] Debug window unavailable; continuing headless. "
+            "Set AEGIS_SHOW_DEBUG_WINDOW=false to silence this message."
+        )
 
 
 def close_debug_window(window_name: str) -> None:
+    if _GUI_DISABLED_REASON is not None:
+        return
     try:
         cv2.destroyWindow(window_name)
     except Exception:

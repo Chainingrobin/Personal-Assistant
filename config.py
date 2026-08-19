@@ -62,6 +62,16 @@ class VisionConfig:
     show_debug_window: bool = _as_bool(os.getenv("AEGIS_SHOW_DEBUG_WINDOW"), True)
 
 
+@dataclass(frozen=True)
+class DisplayConfig:
+    backend: str = os.environ.get("AEGIS_DISPLAY_BACKEND", "emulator")
+    i2c_port: int = int(os.environ.get("AEGIS_DISPLAY_I2C_PORT", "1"))
+    i2c_address: int = int(os.environ.get("AEGIS_DISPLAY_I2C_ADDR", "0x3C"), 16)
+    width: int = 128
+    height: int = 64
+
+
 AGENT_CONFIG = AgentConfig()
 GOOGLE_CONFIG = GoogleConfig()
 VISION_CONFIG = VisionConfig()
+DISPLAY_CONFIG = DisplayConfig()

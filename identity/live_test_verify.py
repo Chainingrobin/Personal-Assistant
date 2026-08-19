@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+import numpy as np 
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -71,6 +72,9 @@ def main() -> None:
 
         audio = result.samples
         duration = result.duration_seconds
+
+        print(f"  [debug] dtype={audio.dtype} shape={audio.shape} sr={result.sample_rate} "
+      f"peak={np.abs(audio).max()} rms={np.sqrt(np.mean(audio.astype(np.float64)**2)):.1f}")
 
         verified, score = switch_user(
             args.user_id, audio, sample_rate=result.sample_rate,

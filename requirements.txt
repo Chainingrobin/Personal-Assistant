@@ -5,6 +5,8 @@ google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
 python-dotenv
+kokoro-onnx
+# System dependency, not pip-installable: espeak-ng
 dateparser
 faster-whisper
 openwakeword

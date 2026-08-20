@@ -77,7 +77,21 @@ class DisplayConfig:
     height: int = 64
 
 
+@dataclass(frozen=True)
+class TTSConfig:
+    backend: str = os.getenv("TTS_BACKEND", "kokoro").strip().lower()
+    model_path: str = os.getenv("TTS_MODEL_PATH", "models/tts/kokoro-v1.0.int8.onnx")
+    voices_path: str = os.getenv("TTS_VOICES_PATH", "models/tts/voices-v1.0.bin")
+    voice: str = os.getenv("TTS_VOICE", "af_sky")
+    speed: float = float(os.getenv("TTS_SPEED", "1.2"))
+
+    def __post_init__(self) -> None:
+        if self.speed <= 0:
+            raise ValueError("TTS_SPEED must be greater than zero")
+
+
 AGENT_CONFIG = AgentConfig()
 GOOGLE_CONFIG = GoogleConfig()
 VISION_CONFIG = VisionConfig()
 DISPLAY_CONFIG = DisplayConfig()
+TTS_CONFIG = TTSConfig()

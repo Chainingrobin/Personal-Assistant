@@ -30,6 +30,7 @@ from identity.voice_id import (
     switch_user,
 )
 from text_input import TextInputSource
+from tts import TTSBackend, get_tts_backend, play
 from vision.study_mode import StudyModeEvent, StudyModeMonitor
 from tools.add_calendar_event import add_calendar_event
 from tools.auth import get_google_credentials
@@ -154,6 +155,7 @@ class RuntimeComponents:
     transcriber: WhisperTranscriber
     voice_verifier: SpeakerVerifier
     study_mode_monitor: StudyModeMonitor
+    tts_backend: TTSBackend
     heavy_task_lock: threading.Lock
 
 
@@ -232,7 +234,9 @@ def _handle_wake_event(runtime: RuntimeComponents) -> None:
     with runtime.heavy_task_lock:
         # NOTE: THINKING / TOOL_* display states are set inside Orchestrator.run
         # itself (orchestrate.py), since that's where tool-call detection happens.
-        run_one_turn(runtime.orchestrator, active_user, transcript)
+        response = run_one_turn(runtime.orchestrator, active_user, transcript)
+        audio = runtime.tts_backend.synthesize(response.raw_output)
+        play(audio)
     t4 = time.perf_counter()
     print(f"[timing] Orchestrator (RAG+LLM+tools): {t4 - t3:.2f}s")
     print(f"[timing] TOTAL turn: {t4 - t0:.2f}s")
@@ -242,6 +246,7 @@ def _handle_wake_event(runtime: RuntimeComponents) -> None:
 def _handle_text_transcript(
     orchestrator: Orchestrator,
     study_mode_monitor: StudyModeMonitor,
+    tts_backend: TTSBackend,
     heavy_task_lock: threading.Lock,
     transcript: str,
 ) -> None:
@@ -279,7 +284,9 @@ def _handle_text_transcript(
     active_user = get_current_user()
     print(f"[state] DISPATCHING — active user '{active_user}'...")
     with heavy_task_lock:
-        run_one_turn(orchestrator, active_user, transcript)
+        response = run_one_turn(orchestrator, active_user, transcript)
+        audio = tts_backend.synthesize(response.raw_output)
+        play(audio)
 
 
 def _handle_study_mode_event(event: StudyModeEvent, orchestrator: Orchestrator, heavy_task_lock: threading.Lock) -> None:
@@ -345,6 +352,7 @@ def main() -> None:
     print(f"[config] model={AGENT_CONFIG.model} profile={AGENT_CONFIG.hardware_profile} temp={AGENT_CONFIG.temperature}")
     transport = OllamaTransport(model=AGENT_CONFIG.model)
     orchestrator = Orchestrator(transport, max_retries=5, verbose=True)
+    tts_backend = get_tts_backend()
     heavy_task_lock = threading.Lock()
 
     if AGENT_CONFIG.input_mode == "text":
@@ -358,7 +366,7 @@ def main() -> None:
                 transcript = text_input.read_transcript()
                 if transcript is None:
                     break
-                _handle_text_transcript(orchestrator, study_mode_monitor, heavy_task_lock, transcript)
+                _handle_text_transcript(orchestrator, study_mode_monitor, tts_backend, heavy_task_lock, transcript)
         except KeyboardInterrupt:
             print("\n[main] Exiting on user interrupt.")
         finally:
@@ -381,6 +389,7 @@ def main() -> None:
         transcriber=transcriber,
         voice_verifier=voice_verifier,
         study_mode_monitor=study_mode_monitor,
+        tts_backend=tts_backend,
         heavy_task_lock=heavy_task_lock,
     )
 

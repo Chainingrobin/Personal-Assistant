@@ -34,6 +34,46 @@ If you are deploying to the Raspberry Pi camera module, also install the Pi-only
 pip install -r requirements-pi.txt
 ```
 
+## Text-to-Speech Setup
+
+TTS is local model inference. The Python package requires the system
+dependency `espeak-ng`, which is not pip-installable.
+
+On Windows, install it with either:
+
+```powershell
+winget install --id eSpeak-NG.eSpeak-NG
+```
+
+or the Windows MSI from the [eSpeak NG releases](https://github.com/espeak-ng/espeak-ng/releases).
+On Raspberry Pi OS, install it with:
+
+```bash
+sudo apt update
+sudo apt install espeak-ng
+```
+
+Download the Kokoro assets into the configured locations:
+
+```bash
+python scripts/download_tts_models.py
+```
+
+The model files are machine-local and are ignored by Git. Configure TTS in
+`.env` when the defaults do not match the machine:
+
+```dotenv
+TTS_BACKEND=kokoro
+TTS_MODEL_PATH=models/tts/kokoro-v1.0.int8.onnx
+TTS_VOICES_PATH=models/tts/voices-v1.0.bin
+TTS_VOICE=af_sky
+TTS_SPEED=1.0
+```
+
+The backend exposes `synthesize(text)` and returns raw audio samples with a
+sample rate. Audio playback and orchestrator wiring are intentionally kept at
+the application integration point rather than inside the backend.
+
 ### 4. Enroll each user once on a laptop
 
 - Run the assistant on a machine with a browser.

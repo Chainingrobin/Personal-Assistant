@@ -10,3 +10,4 @@ identity/profiles/*.npy
 /venv
 .python-version
 models/eye_ghiss.onnx
+models/tts/

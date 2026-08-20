@@ -189,7 +189,7 @@ def _handle_wake_event(runtime: RuntimeComponents) -> None:
         print("[study] Enabling study mode monitor...")
         try:
             runtime.study_mode_monitor.start()
-            set_state(DisplayState.STUDY_MODE)
+            
         except Exception as exc:
             print(f"[study] Failed to enable study mode: {exc}")
             set_state(DisplayState.IDLE)
@@ -207,6 +207,7 @@ def _handle_wake_event(runtime: RuntimeComponents) -> None:
     claimed_user = extract_switch_user_intent(transcript, known_user_ids=get_known_user_ids())
     if claimed_user:
         print(f"[state] VERIFYING — switch intent for '{claimed_user}'...")
+        set_state(DisplayState.SWITCHING_USER)
         t_verify0 = time.perf_counter()
         with runtime.heavy_task_lock:
             success, score = switch_user(
@@ -217,8 +218,11 @@ def _handle_wake_event(runtime: RuntimeComponents) -> None:
         if success:
             ensure_user_enrolled(claimed_user)
             print(f"[identity] Switched to {claimed_user} with similarity={score:.3f}")
+            set_state(DisplayState.SWITCH_SUCCESS)
         else:
             print(f"[identity] Voice verification failed for {claimed_user}; score={score:.3f}")
+            set_state(DisplayState.SWITCH_FAILED) 
+        time.sleep(1.0)
         set_state(DisplayState.IDLE)
         return
 
@@ -267,6 +271,9 @@ def _handle_text_transcript(
         set_current_user(claimed_user)
         ensure_user_enrolled(claimed_user)
         print(f"[identity] Switched to {claimed_user} from text input.")
+        set_state(DisplayState.SWITCH_SUCCESS)   # NEW
+        time.sleep(1.0)                            # NEW
+        set_state(DisplayState.IDLE)   
         return
 
     active_user = get_current_user()

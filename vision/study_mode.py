@@ -7,6 +7,8 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Literal
+from display import set_state, advance
+from display.states import DisplayState
 
 import numpy as np
 
@@ -151,6 +153,8 @@ class StudyModeMonitor:
             f"[study] Calibrating for {self.config.calibration_duration_sec:.1f}s. "
             "Sit normally and look at the screen."
         )
+        set_state(DisplayState.CALIBRATING)          # NEW
+        last_tick = time.monotonic()                  # NEW
         samples_yaw: list[float] = []
         samples_pitch: list[float] = []
         frames_seen = 0
@@ -164,14 +168,11 @@ class StudyModeMonitor:
             if now < next_frame_time:
                 time.sleep(min(frame_interval / 4.0, next_frame_time - now))
                 continue
-
-            # No heavy_task_lock here: camera read + MediaPipe inference is
-            # cheap and must stay independent of STT/voice-ID/LLM so the
-            # wake-word thread is never starved waiting on this loop.
+            if now - last_tick >= 1.0:                # NEW
+                last_tick = now                         # NEW
+                advance()                                # NEW
             frame = self._camera_backend.read_frame() if self._camera_backend is not None else None
             frames_seen += 1
-
-            # --- TEMP DIAGNOSTIC: dump the raw frame once, unconditionally ---
             if frames_seen == 1:
                 if frame is None:
                     print("[diag] read_frame() returned None on first read")
@@ -179,10 +180,7 @@ class StudyModeMonitor:
                     print(f"[diag] frame shape={frame.shape} dtype={frame.dtype}")
                     cv2.imwrite("/tmp/aegis_raw_frame.jpg", frame)
                     print("[diag] wrote /tmp/aegis_raw_frame.jpg")
-            # --- end diagnostic ---
-
             detection = detector.process_frame(frame) if frame is not None else None
-
             next_frame_time = time.monotonic() + frame_interval
             if detection is None:
                 now = time.monotonic()
@@ -200,13 +198,13 @@ class StudyModeMonitor:
                 calibration_note = f"Calibrating... samples={len(samples_yaw)}"
                 debug_frame = render_debug_frame(frame, detection, "CALIBRATING", calibration_note)
                 show_debug_frame(self._window_name, debug_frame)
+        advance()  # NEW — force final "Calibrated!" step even if the last 1s tick was missed
         if len(samples_yaw) < 3:
             raise RuntimeError(
                 "Calibration failed because too few face samples were collected. "
                 "Make sure your face is visible and well lit during the calibration window. "
                 f"If the GUI is unavailable, inspect {get_headless_preview_path().resolve()} for the camera preview."
             )
-        # Median resists a single blink or transient head twitch better than the mean.
         baseline_yaw = float(np.median(samples_yaw))
         baseline_pitch = float(np.median(samples_pitch))
         print(
@@ -227,6 +225,7 @@ class StudyModeMonitor:
                 raise RuntimeError("Study mode started without an initialized camera backend")
             self._camera_backend.open()
             self._current_calibration = self._calibrate(detector)
+            set_state(DisplayState.STUDY_MODE) 
             frame_interval = 1.0 / max(1, self.config.camera_fps)
             next_frame_time = time.monotonic()
             while not self._stop_event.is_set():

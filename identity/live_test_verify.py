@@ -13,6 +13,15 @@ This calls the real switch_user() from voice_id.py, so it also exercises
 the "already active user" short-circuit -- if you claim the user that's
 already active, you'll see the no-op message instead of a fresh score.
 
+CHANGE LOG:
+  - Reports utterance duration alongside the score and flags short (<3s)
+    utterances, since short "switch user X" phrases are the primary source
+    of score instability -- this makes that trade-off visible per-attempt
+    instead of only showing up as unexplained variance.
+  - No change to the verification logic itself; this file's correctness
+    depended on voice_id.py's resampling, which has been fixed there
+    (polyphase instead of naive linear interpolation).
+
 Usage:
     python identity/live_test_verify.py robin
     python identity/live_test_verify.py robin --threshold 0.6
@@ -22,7 +31,8 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-import numpy as np 
+
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -30,6 +40,8 @@ if str(ROOT) not in sys.path:
 
 from identity.voice_id import SpeakerVerifier, get_current_user, switch_user
 from audio.vad_recorder import VADRecorder
+
+SHORT_UTTERANCE_SECONDS = 3.0
 
 
 def main() -> None:
@@ -48,7 +60,6 @@ def main() -> None:
     print("Model loaded.\n")
 
     recorder = VADRecorder(debug=args.vad_debug)
-
     print(f"Ready. Active user is currently: '{get_current_user()}'")
     print(f"Claiming identity: '{args.user_id}'")
     print("Ctrl+C to quit.\n")
@@ -65,23 +76,25 @@ def main() -> None:
         print("  [listening]")
         result = recorder.record_utterance()
         print("  [utterance captured]" if result else "  [no speech detected]")
-
         if result is None:
             print()
             continue
 
         audio = result.samples
         duration = result.duration_seconds
-
         print(f"  [debug] dtype={audio.dtype} shape={audio.shape} sr={result.sample_rate} "
-      f"peak={np.abs(audio).max()} rms={np.sqrt(np.mean(audio.astype(np.float64)**2)):.1f}")
+              f"peak={np.abs(audio).max()} rms={np.sqrt(np.mean(audio.astype(np.float64)**2)):.1f}")
 
         verified, score = switch_user(
             args.user_id, audio, sample_rate=result.sample_rate,
             threshold=args.threshold, verifier=verifier, force_verify=args.force,
         )
 
-        print(f"  Duration:  {duration:.1f}s")
+        duration_flag = ""
+        if duration < SHORT_UTTERANCE_SECONDS:
+            duration_flag = f"  <-- under {SHORT_UTTERANCE_SECONDS:.0f}s, expect more score variance"
+
+        print(f"  Duration:  {duration:.1f}s{duration_flag}")
         print(f"  Score:     {score:.4f}")
         print(f"  Threshold: {active_threshold:.2f}")
         print(f"  Result:    {'MATCH -- switched to ' + args.user_id if verified else 'NO MATCH'}")

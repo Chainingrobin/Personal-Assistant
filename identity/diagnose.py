@@ -13,8 +13,23 @@ What it does:
   3. Prints per-clip scores, min/max/avg, and flags any clip that looks like
      an outlier (bad mic moment, mumbled take, etc).
 
+CHANGE LOG (consistency fix):
+  - Each clip's embedding is now L2-normalized BEFORE averaging into the
+    profile centroid (both for the full-enrollment profile and every
+    leave-one-out profile). Previously raw (unnormalized) embeddings were
+    averaged and only normalized once at the end, so louder/cleaner clips
+    with larger embedding magnitude silently dominated the mean. This
+    changes the resulting profile vector, so re-run enrollment after
+    pulling this fix even if you don't re-record anything.
+
 Re-run this any time you add/replace clips in the folder -- it just overwrites
 the saved profile, safe to run repeatedly.
+
+NOTE: leave-one-out here only tells you the clips agree with EACH OTHER
+(often recorded in one sitting). It does not catch enrollment-vs-live domain
+shift. Pair this with a held-out test set recorded in a separate session and
+scored through the real switch_user()/verify_speaker() path (see
+live_test_verify.py) before trusting the threshold.
 """
 from __future__ import annotations
 
@@ -49,10 +64,15 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / denom) if denom > 0.0 else 0.0
 
 
+def _centroid(embeddings: list[np.ndarray]) -> np.ndarray:
+    """Average a list of embeddings AFTER normalizing each one individually."""
+    normed = [_normalize(e) for e in embeddings]
+    return _normalize(np.mean(np.stack(normed, axis=0), axis=0).astype(np.float32))
+
+
 def diagnose(user_id: str, clips_dir: Path, profile_dir: Path, threshold: float) -> None:
     verifier = SpeakerVerifier(profile_dir=profile_dir)
     wav_paths = sorted(p for p in clips_dir.iterdir() if p.suffix.lower() == ".wav")
-
     if not wav_paths:
         print(f"No WAV files found in {clips_dir}")
         return
@@ -63,17 +83,25 @@ def diagnose(user_id: str, clips_dir: Path, profile_dir: Path, threshold: float)
     print(f"Found {len(wav_paths)} clips for '{user_id}'\n")
 
     # Step 1: embed every clip once
-    embeddings = {}
+    embeddings: dict[str, np.ndarray] = {}
+    durations: dict[str, float] = {}
     for path in wav_paths:
         audio, sample_rate = _load_wav(path)
         duration = len(audio) / float(sample_rate)
         emb = verifier.embed_audio(audio, sample_rate=sample_rate)
         embeddings[path.name] = emb
+        durations[path.name] = duration
         print(f"[embed] {path.name} ({duration:.1f}s)")
 
-    # Step 2: real enrollment -- average ALL clips, save profile (overwrites old one)
-    all_embs = np.stack(list(embeddings.values()), axis=0)
-    full_profile = _normalize(np.mean(all_embs, axis=0).astype(np.float32))
+    short_clips = [name for name, d in durations.items() if d < 3.0]
+    if short_clips:
+        print(
+            f"\n[warn] {len(short_clips)} clip(s) under 3.0s: {', '.join(short_clips)} "
+            "-- very short clips tend to produce noisier/less stable embeddings."
+        )
+
+    # Step 2: real enrollment -- normalize each embedding, then average (saves profile)
+    full_profile = _centroid(list(embeddings.values()))
     profile_dir.mkdir(parents=True, exist_ok=True)
     out_path = profile_dir / f"{user_id}.npy"
     np.save(out_path, full_profile)
@@ -85,7 +113,7 @@ def diagnose(user_id: str, clips_dir: Path, profile_dir: Path, threshold: float)
     scores = []
     for held_out_name in names:
         others = [emb for name, emb in embeddings.items() if name != held_out_name]
-        loo_profile = _normalize(np.mean(np.stack(others, axis=0), axis=0).astype(np.float32))
+        loo_profile = _centroid(others)
         score = _cosine(loo_profile, embeddings[held_out_name])
         scores.append(score)
         flag = ""
@@ -101,6 +129,10 @@ def diagnose(user_id: str, clips_dir: Path, profile_dir: Path, threshold: float)
               "or dropping it from the folder and re-running this script.")
     else:
         print("-> All clips are internally consistent. Profile looks solid.")
+    print(
+        "-> Reminder: this only measures self-consistency of the enrollment folder. "
+        "Validate against a separate held-out session with live_test_verify.py before trusting this threshold."
+    )
 
 
 def main() -> None:
@@ -110,7 +142,6 @@ def main() -> None:
     parser.add_argument("--profile-dir", type=Path, default=Path("identity/profiles"))
     parser.add_argument("--threshold", type=float, default=0.70)
     args = parser.parse_args()
-
     diagnose(args.user_id, args.clips_dir, args.profile_dir, args.threshold)
 
 

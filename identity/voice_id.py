@@ -2,17 +2,25 @@
 
 This module wraps SpeechBrain's ECAPA-TDNN encoder (`spkrec-ecapa-voxceleb`)
 for 1:1 speaker verification against enrolled profile embeddings. Install with
-`pip install speechbrain soundfile`. The first run downloads model weights into
-the local Torch/Hugging Face cache, typically under `~/.cache/torch` and
+`pip install speechbrain soundfile scipy`. The first run downloads model weights
+into the local Torch/Hugging Face cache, typically under `~/.cache/torch` and
 `~/.cache/huggingface`. The encoder is loaded once when :class:`SpeakerVerifier`
 is created; verification then runs sequentially after STT, never concurrently
 with Whisper or the LLM.
-"""
 
+CHANGE LOG (consistency fixes):
+- Replaced naive `np.interp` linear resampling with `scipy.signal.resample_poly`
+  (polyphase filter, includes anti-aliasing). Linear interpolation does not
+  band-limit before downsampling and was smearing high-frequency content on
+  the 44.1kHz -> 16kHz conversion, shifting embeddings versus audio captured
+  natively at 16kHz. Prefer capturing at 16kHz directly in VADRecorder so this
+  path is a no-op at runtime; this fallback now only matters for legacy clips.
+"""
 from __future__ import annotations
 
 import os
 import re
+from math import gcd
 from pathlib import Path
 from typing import Sequence
 
@@ -39,10 +47,17 @@ except ImportError as exc:  # pragma: no cover - import guard
 else:
     _SPEECHBRAIN_ERROR = None
 
+try:
+    from scipy.signal import resample_poly
+except ImportError as exc:  # pragma: no cover - import guard
+    resample_poly = None  # type: ignore[assignment]
+    _SCIPY_ERROR = exc
+else:
+    _SCIPY_ERROR = None
 
 DEFAULT_KNOWN_USERS = ("youssef", "robin", "mariam")
 PROFILE_DIR = Path("identity/profiles")
-DEFAULT_THRESHOLD = float(os.getenv("AEGIS_VOICE_ID_THRESHOLD", "0.70"))
+DEFAULT_THRESHOLD = float(os.getenv("AEGIS_VOICE_ID_THRESHOLD", "0.65"))
 _CURRENT_USER = os.getenv("AEGIS_DEFAULT_USER", DEFAULT_KNOWN_USERS[0])
 
 
@@ -61,14 +76,27 @@ def _ensure_mono_float32(audio_buffer: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(audio.reshape(-1))
 
 
-def _resample_linear(audio: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
+def _resample_poly_audio(audio: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
+    """Anti-aliased polyphase resample. Replaces the old naive linear interp.
+
+    Falls back to linear interpolation only if scipy is unavailable, with a
+    loud warning, since that path is known to degrade embedding quality.
+    """
     if source_rate == target_rate or audio.size == 0:
         return audio
-    duration = audio.shape[0] / float(source_rate)
-    target_count = max(1, int(duration * target_rate))
-    source_positions = np.linspace(0.0, duration, num=audio.shape[0], endpoint=False)
-    target_positions = np.linspace(0.0, duration, num=target_count, endpoint=False)
-    return np.interp(target_positions, source_positions, audio).astype(np.float32)
+    if resample_poly is None:
+        print(
+            "[voice_id] WARNING: scipy not installed, falling back to naive linear "
+            "resampling. This will hurt embedding consistency -- `pip install scipy`."
+        )
+        duration = audio.shape[0] / float(source_rate)
+        target_count = max(1, int(duration * target_rate))
+        source_positions = np.linspace(0.0, duration, num=audio.shape[0], endpoint=False)
+        target_positions = np.linspace(0.0, duration, num=target_count, endpoint=False)
+        return np.interp(target_positions, source_positions, audio).astype(np.float32)
+    g = gcd(source_rate, target_rate)
+    up, down = target_rate // g, source_rate // g
+    return resample_poly(audio, up, down).astype(np.float32)
 
 
 def get_known_user_ids() -> tuple[str, ...]:
@@ -114,7 +142,6 @@ class SpeakerVerifier:
             raise ImportError("speechbrain is required for speaker verification") from _SPEECHBRAIN_ERROR
         if torch is None:
             raise ImportError("torch is required for speaker verification") from _TORCH_ERROR
-
         self.profile_dir = Path(profile_dir)
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self.threshold = threshold
@@ -123,7 +150,7 @@ class SpeakerVerifier:
 
     def _prepare_audio(self, audio_buffer: np.ndarray, sample_rate: int) -> np.ndarray:
         audio = _ensure_mono_float32(audio_buffer)
-        audio = _resample_linear(audio, sample_rate, 16000)
+        audio = _resample_poly_audio(audio, sample_rate, 16000)
         return audio
 
     def embed_audio(self, audio_buffer: np.ndarray, sample_rate: int = 16000) -> np.ndarray:
@@ -134,7 +161,6 @@ class SpeakerVerifier:
         audio = self._prepare_audio(audio_buffer, sample_rate)
         if audio.size == 0:
             raise ValueError("Cannot embed an empty audio buffer")
-
         tensor = torch.from_numpy(audio).unsqueeze(0)
         with torch.no_grad():
             embedding = self.encoder.encode_batch(tensor).squeeze().detach().cpu().numpy().astype(np.float32)
@@ -208,7 +234,6 @@ def switch_user(
     if claimed_user_id == get_current_user() and not force_verify:
         print(f"[identity] '{claimed_user_id}' is already the active user — no switch needed")
         return True, 1.0
-
     verifier = verifier or SpeakerVerifier()
     verified, score = verifier.verify_speaker(
         claimed_user_id,

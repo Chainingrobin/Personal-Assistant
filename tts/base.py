@@ -8,6 +8,19 @@ from dataclasses import dataclass
 import numpy as np
 
 
+import re
+
+_MARKDOWN_STRIP_RE = re.compile(r"[*_`#~]|(\[.*?\]\(.*?\))")
+
+def sanitize_for_speech(text: str) -> str:
+    """Strip markdown formatting characters the model tends to emit,
+    so TTS doesn't read '**' or '#' aloud. Applied right before synthesis,
+    never before the text is displayed/logged."""
+    text = re.sub(r"\[(.*?)\]\(.*?\)", r"\1", text)   # [label](url) -> label
+    text = _MARKDOWN_STRIP_RE.sub("", text)
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    return text
+
 @dataclass(frozen=True)
 class AudioData:
     """Synthesized mono audio samples and their playback sample rate."""

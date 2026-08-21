@@ -16,7 +16,7 @@ def query_rag(query: str, top_k: int = 3, *, user_id: str = "") -> str:
     """
     print(f"\n[RAG] 🔍 Querying knowledge base: '{query}'")
     # Eventually, you can pass user_id into retrieve() to isolate documents!
-    results = retrieve(query, top_k=top_k) 
+    results = retrieve(query, top_k=top_k, user_id=user_id)
     return format_context(results)
 
 if __name__ == "__main__":

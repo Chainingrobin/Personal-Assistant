@@ -24,9 +24,10 @@ def _load_db() -> list[dict]:
                 entries.append(json.load(f))
     return entries
 
-def retrieve(query: str, top_k: int = 3) -> list[dict]:
+def retrieve(query: str, top_k: int = 3, *, user_id: str) -> list[dict]:
     query_vector = embed_text(query)
     db = _load_db()
+    db = [e for e in db if e.get("metadata", {}).get("user_id") == user_id]
     if not db:
         return []
     scored = [
@@ -48,6 +49,6 @@ def format_context(results: list[dict]) -> str:
 if __name__ == "__main__":
     for q in ["What are my highest priority tasks?", "When should I take a break?"]:
         print(f"\nQuery: '{q}'")
-        results = retrieve(q, top_k=2)
+        results = retrieve(q, top_k=2, user_id="youssef")
         print(format_context(results))
         print(f"(scores: {[round(r['score'], 3) for r in results]})")

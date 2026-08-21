@@ -31,6 +31,7 @@ from identity.voice_id import (
 )
 from text_input import TextInputSource
 from tts import TTSBackend, get_tts_backend, play
+from tts.base import sanitize_for_speech
 from vision.study_mode import StudyModeEvent, StudyModeMonitor
 from tools.add_calendar_event import add_calendar_event
 from tools.auth import get_google_credentials
@@ -285,11 +286,11 @@ def _handle_text_transcript(
     print(f"[state] DISPATCHING — active user '{active_user}'...")
     with heavy_task_lock:
         response = run_one_turn(orchestrator, active_user, transcript)
-        audio = tts_backend.synthesize(response.raw_output)
+        audio = tts_backend.synthesize(sanitize_for_speech(response.raw_output))
         play(audio)
 
 
-def _handle_study_mode_event(event: StudyModeEvent, orchestrator: Orchestrator, heavy_task_lock: threading.Lock) -> None:
+def _handle_study_mode_event(event: StudyModeEvent, orchestrator: Orchestrator, heavy_task_lock: threading.Lock,tts_backend: TTSBackend,) -> None:
     if event.kind != "escalation":
         return
 
@@ -329,17 +330,20 @@ def _handle_study_mode_event(event: StudyModeEvent, orchestrator: Orchestrator, 
 
     print(f"[study] Routing escalation event to LLM for user '{current_user}'...")
     with heavy_task_lock:
-        orchestrator.run(request, current_user_id=current_user)
+        response = orchestrator.run(request, current_user_id=current_user)
+        if response.raw_output.strip():
+            audio = tts_backend.synthesize(sanitize_for_speech(response.raw_output))
+            play(audio)
 
     # Study mode is still active after handling one distraction escalation,
     # so return the display to the STUDY_MODE indicator rather than IDLE.
     set_state(DisplayState.STUDY_MODE)
 
 
-def _create_study_mode_monitor(orchestrator: Orchestrator, heavy_task_lock: threading.Lock) -> StudyModeMonitor:
+def _create_study_mode_monitor(orchestrator: Orchestrator, heavy_task_lock: threading.Lock,tts_backend: TTSBackend,) -> StudyModeMonitor:
     return StudyModeMonitor(
         config=VISION_CONFIG,
-        on_event=lambda event: _handle_study_mode_event(event, orchestrator, heavy_task_lock),
+        on_event=lambda event: _handle_study_mode_event(event, orchestrator, heavy_task_lock, tts_backend),
         heavy_task_lock=heavy_task_lock,
     )
 
@@ -357,7 +361,7 @@ def main() -> None:
 
     if AGENT_CONFIG.input_mode == "text":
         # Local/dev/headless mode: bypass wake word, VAD, Whisper, and ECAPA entirely.
-        study_mode_monitor = _create_study_mode_monitor(orchestrator, heavy_task_lock)
+        study_mode_monitor = _create_study_mode_monitor(orchestrator, heavy_task_lock, tts_backend)
         ensure_user_enrolled(get_current_user())
         text_input = TextInputSource()
         print("Aegis text mode is running. Type a command; press Ctrl+C or send EOF to exit.")
@@ -377,7 +381,7 @@ def main() -> None:
     transcriber = WhisperTranscriber()
     recorder = VADRecorder()
     wake_listener = WakeWordListener()
-    study_mode_monitor = _create_study_mode_monitor(orchestrator, heavy_task_lock)
+    study_mode_monitor = _create_study_mode_monitor(orchestrator, heavy_task_lock, tts_backend)
 
     ensure_user_enrolled(get_current_user())
     set_state(DisplayState.IDLE)
